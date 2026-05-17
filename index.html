@@ -1,0 +1,240 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>脚本工坊</title>
+  <link href="https://fonts.googleapis.com/css2?family=Noto+Serif+SC:wght@400;600;700&family=Noto+Sans+SC:wght@300;400;500&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="/src/style.css" />
+</head>
+<body>
+
+<!-- Header -->
+<header>
+  <div class="logo">
+    <div class="logo-mark">✦</div>
+    脚本工坊
+  </div>
+  <div class="header-right">
+    <div style="font-size:11px;color:rgba(247,244,239,0.45);margin-right:4px">AI 引擎</div>
+    <select class="model-select" id="providerSelect" onchange="switchProvider(this.value)">
+      <option value="doubao">豆包</option>
+      <option value="deepseek">DeepSeek</option>
+      <option value="openrouter">OpenRouter</option>
+    </select>
+    <button type="button" class="hdr-btn" onclick="openApiKeyModal()">⚙ API Key</button>
+  </div>
+</header>
+
+<!-- App Body -->
+<div class="app">
+  <!-- Sidebar -->
+  <div class="sidebar">
+    <div class="side-head">
+      <span class="side-label">栏目</span>
+      <button type="button" class="upload-btn" onclick="openFolderUpload()" title="上传含有 Word 文档的文件夹">+ 上传文件夹</button>
+    </div>
+    <input type="file" id="folderInput" webkitdirectory style="display:none" onchange="handleFolderUpload(event)">
+    <div class="upload-progress" id="uploadProgress">
+      <div class="progress-dot"></div>
+      <span id="uploadProgressTxt">解析文档中…</span>
+    </div>
+    <div class="col-list" id="colList"></div>
+  </div>
+
+  <!-- Editor -->
+  <div class="editor">
+    <div class="ed-toolbar" id="edToolbar">
+      <span style="font-size:12px;color:var(--ink-faint)">← 选择栏目开始创作</span>
+    </div>
+    <div class="ed-body" id="edBody">
+      <div class="empty-state" id="emptyState">
+        <div class="empty-icon">📝</div>
+        <div class="empty-title">选择栏目开始创作</div>
+        <div class="empty-desc">点击左侧「+ 上传文件夹」添加栏目<br>然后选择栏目，输入大纲生成脚本</div>
+      </div>
+      <div id="edActive" style="display:none;flex-direction:column;gap:22px;">
+        <div>
+          <div class="sec-label">创作大纲</div>
+          <textarea class="outline-area" id="outlineInput" rows="4"
+            placeholder="输入本期视频大纲，约50字…&#10;例：介绍深海鱼类的发光原理，从生物发光的化学机制到实际用途，配合常见案例说明。"
+            oninput="updateCC()"></textarea>
+          <div class="outline-foot">
+            <div class="char-ct">已输入 <em id="ccNum">0</em> 字</div>
+            <div style="display:flex;align-items:center;gap:12px;">
+              <label class="ref-toggle" onclick="toggleRefMode()" title="开启后生成时自动调取右侧参考资料库">
+                <div class="toggle-track" id="refTrack"><div class="toggle-thumb"></div></div>
+                <span style="font-size:12px;color:var(--ink-faint)">参考资料库</span>
+              </label>
+              <button type="button" class="gen-btn" id="genBtn" onclick="generate()">
+                <span id="genBtnTxt">✦ 生成脚本</span>
+              </button>
+            </div>
+          </div>
+        </div>
+
+        <div>
+          <div class="sec-label" id="scriptLabel" style="display:none">脚本草稿</div>
+          <div class="script-card" id="scriptCard">
+            <div class="sc-head">
+              <div class="sc-title">逐字稿</div>
+              <div class="sc-actions">
+                <button type="button" class="act-btn" onclick="copyScript()">复制</button>
+                <button type="button" class="act-btn" onclick="generate()">重新生成</button>
+                <button type="button" class="act-btn primary" onclick="confirmScript()">✓ 确认稿件</button>
+              </div>
+            </div>
+            <div class="sc-body" id="scriptBody" style="padding:12px 16px"></div>
+            <div class="para-hint" id="paraHint" style="display:none">↑ 点击任意段落，在下方对话框中进行定向修改</div>
+            <div class="sc-foot">字数：<strong id="wordCt">0</strong> 字</div>
+          </div>
+          <!-- 段落对话修改卡 -->
+          <div class="chat-card" id="chatCard" style="display:none">
+            <div class="chat-card-head">
+              <span class="chat-card-title" id="chatCardTitle">段落修改</span>
+              <button type="button" class="prev-close" onclick="closeChat()">✕</button>
+            </div>
+            <div class="chat-para-quote" id="chatParaQuote"></div>
+            <div class="chat-msgs" id="chatMsgs"></div>
+            <div class="chat-input-row">
+              <textarea class="chat-input" id="chatInput" rows="2"
+                placeholder="描述修改意见… 例：让这段更口语化、缩短到50字、换个更抓人的开场"
+                onkeydown="chatKeydown(event)"></textarea>
+              <button type="button" class="chat-send-btn" id="chatSendBtn" onclick="sendParaChat()" title="发送 (Enter)">↑</button>
+            </div>
+          </div>
+        </div>
+
+        <div class="meta-wrap" id="metaWrap">
+          <div class="sec-label">标题 &amp; 简介</div>
+          <div class="meta-grid">
+            <div class="meta-card">
+              <div class="mc-head">标题备选（12字以内）</div>
+              <div class="mc-body" id="titleOpts"></div>
+            </div>
+            <div class="meta-card">
+              <div class="mc-head">简介备选（20字以内）</div>
+              <div class="mc-body" id="descOpts"></div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="export-bar" id="exportBar">
+      <div class="export-info">
+        <div class="export-title-txt" id="expTitle">—</div>
+        <div class="export-desc-txt" id="expDesc">—</div>
+      </div>
+      <div class="exp-actions">
+        <button type="button" class="exp-btn secondary" onclick="copyFull()">复制全文</button>
+        <button type="button" class="exp-btn primary" onclick="exportMd()">↓ 导出 Markdown</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Library -->
+  <div class="library">
+    <div class="lib-head">
+      <div class="lib-head-row">
+        <span class="lib-label">参考资料库</span>
+        <span class="lib-count" id="libCount"></span>
+      </div>
+    </div>
+    <div class="doc-list" id="docList">
+      <div class="lib-empty">
+        <div class="lib-empty-icon">📂</div>
+        <div>选择栏目后显示<br>该栏目下的参考文稿</div>
+      </div>
+    </div>
+    <div class="preview-panel" id="prevPanel">
+      <div class="prev-head">
+        <span id="prevTitle">文稿预览</span>
+        <button type="button" class="prev-close" onclick="closePrev()">✕</button>
+      </div>
+      <div class="prev-body" id="prevBody"></div>
+    </div>
+  </div>
+</div>
+
+<!-- Modal: API Key -->
+<div class="modal-bg" id="apiKeyModal">
+  <div class="modal">
+    <div class="modal-title">配置 API Key &amp; 模型</div>
+    <div class="modal-sub">Key 与模型 ID 仅存储在本地浏览器，不会上传至任何服务器。具体调用哪个模型，由你在下方填写的「模型 ID」决定。</div>
+
+    <!-- 豆包 -->
+    <div class="key-section">
+      <div class="key-section-head">
+        <span class="key-badge" style="background:#2d6ef3">豆</span>
+        豆包（火山引擎 ARK）
+      </div>
+      <div class="field">
+        <label class="field-label">API Key</label>
+        <input class="field-input mono" id="doubaoKey" type="password" placeholder="火山引擎 ARK API Key" autocomplete="off">
+        <div class="field-hint">在 <a href="https://console.volcengine.com/ark/region:ark+cn-beijing/apiKey" target="_blank" rel="noopener noreferrer">火山引擎控制台</a> → API Key 管理 获取</div>
+      </div>
+      <div class="field" style="margin-bottom:0">
+        <label class="field-label">模型 ID</label>
+        <input class="field-input mono" id="doubaoModelId" placeholder="ep-xxxxxxxx-xxxxx 或官方公开模型 ID" autocomplete="off">
+        <div class="field-hint">
+          推荐填入控制台 → <strong>推理接入点</strong> 中创建的 <code style="background:var(--paper-warm);padding:1px 4px;border-radius:3px">ep-xxxxxxxx-xxxxx</code>；也可填官方公开模型 ID（如 <code style="background:var(--paper-warm);padding:1px 4px;border-radius:3px">doubao-1-5-pro-32k-250115</code>）。
+        </div>
+      </div>
+    </div>
+
+    <div class="divider"></div>
+
+    <!-- DeepSeek -->
+    <div class="key-section">
+      <div class="key-section-head">
+        <span class="key-badge" style="background:#4d6bfe">DS</span>
+        DeepSeek
+      </div>
+      <div class="field">
+        <label class="field-label">API Key</label>
+        <input class="field-input mono" id="deepseekKey" type="password" placeholder="sk-…" autocomplete="off">
+        <div class="field-hint">在 <a href="https://platform.deepseek.com/api_keys" target="_blank" rel="noopener noreferrer">platform.deepseek.com</a> 获取</div>
+      </div>
+      <div class="field" style="margin-bottom:0">
+        <label class="field-label">模型 ID</label>
+        <input class="field-input mono" id="deepseekModelId" placeholder="例如 deepseek-chat 或 deepseek-reasoner" autocomplete="off">
+        <div class="field-hint">
+          以 <a href="https://api-docs.deepseek.com/zh-cn/quick_start/pricing" target="_blank" rel="noopener noreferrer">DeepSeek 官方文档</a> 当前公布的模型 ID 为准。
+        </div>
+      </div>
+    </div>
+
+    <div class="divider"></div>
+
+    <!-- OpenRouter -->
+    <div class="key-section">
+      <div class="key-section-head">
+        <span class="key-badge" style="background:#7c3aed">OR</span>
+        OpenRouter
+      </div>
+      <div class="field">
+        <label class="field-label">API Key</label>
+        <input class="field-input mono" id="openrouterKey" type="password" placeholder="sk-or-v1-…" autocomplete="off">
+        <div class="field-hint">在 <a href="https://openrouter.ai/keys" target="_blank" rel="noopener noreferrer">openrouter.ai/keys</a> 获取；可用一个 Key 调多家模型，部分国外模型可能仍需出境网络。</div>
+      </div>
+      <div class="field" style="margin-bottom:0">
+        <label class="field-label">模型 ID</label>
+        <input class="field-input mono" id="openrouterModelId" placeholder="例如 anthropic/claude-sonnet-4.5 或 openai/gpt-4o" autocomplete="off">
+        <div class="field-hint">
+          模型 ID 格式为 <code style="background:var(--paper-warm);padding:1px 4px;border-radius:3px">vendor/model</code>；完整列表见 <a href="https://openrouter.ai/models" target="_blank" rel="noopener noreferrer">openrouter.ai/models</a>。
+        </div>
+      </div>
+    </div>
+
+    <div class="modal-actions">
+      <button type="button" class="btn-c btn-cancel" onclick="closeModal('apiKeyModal')">取消</button>
+      <button type="button" class="btn-c btn-ok" onclick="saveApiKeys()">保存</button>
+    </div>
+  </div>
+</div>
+
+<div class="toast" id="toast"></div>
+
+<script type="module" src="/src/main.js"></script>
+</body>
+</html>
