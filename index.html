@@ -32,7 +32,7 @@
   <!-- Sidebar -->
   <div class="sidebar">
     <div class="side-head">
-      <span class="side-label">栏目</span>
+      <span class="side-label">栏目 & 参考文稿</span>
       <button type="button" class="upload-btn" onclick="openFolderUpload()" title="上传含有 Word 文档的文件夹">+ 上传文件夹</button>
     </div>
     <input type="file" id="folderInput" webkitdirectory style="display:none" onchange="handleFolderUpload(event)">
@@ -41,6 +41,13 @@
       <span id="uploadProgressTxt">解析文档中…</span>
     </div>
     <div class="col-list" id="colList"></div>
+    <div class="preview-panel" id="prevPanel">
+      <div class="prev-head">
+        <span id="prevTitle">文稿预览</span>
+        <button type="button" class="prev-close" onclick="closePrev()">✕</button>
+      </div>
+      <div class="prev-body" id="prevBody"></div>
+    </div>
   </div>
 
   <!-- Editor -->
@@ -55,21 +62,6 @@
         <div class="empty-desc">点击左侧「+ 上传文件夹」添加栏目<br>然后选择栏目，输入大纲生成脚本</div>
       </div>
       <div id="edActive" style="display:none;flex-direction:column;gap:22px;">
-        <div class="identity-block" id="identityBlock">
-          <button type="button" class="identity-head" id="identityToggle" onclick="toggleCreatorIdentity()" aria-expanded="true">
-            <span class="identity-title">创作者身份</span>
-            <span class="identity-chevron" id="identityChevron">▼</span>
-          </button>
-          <div class="identity-body" id="identityBody">
-            <textarea class="outline-area identity-area" id="creatorIdentityInput" rows="14"
-              placeholder="定义 AI 扮演的创作者角色与脚本结构、风格要求…"
-              oninput="onCreatorIdentityInput()"></textarea>
-            <div class="identity-foot">
-              <span class="char-ct">已输入 <em id="identityCcNum">0</em> 字</span>
-              <button type="button" class="identity-reset-btn" onclick="resetCreatorIdentity()">恢复默认</button>
-            </div>
-          </div>
-        </div>
         <div>
           <div class="sec-label">创作大纲</div>
           <textarea class="outline-area" id="outlineInput" rows="4"
@@ -78,7 +70,7 @@
           <div class="outline-foot">
             <div class="char-ct">已输入 <em id="ccNum">0</em> 字</div>
             <div style="display:flex;align-items:center;gap:12px;">
-              <label class="ref-toggle" onclick="toggleRefMode()" title="开启后生成时自动调取右侧参考资料库">
+              <label class="ref-toggle" onclick="toggleRefMode()" title="开启后生成时注入栏目参考文稿，并模仿其语言风格与文字结构">
                 <div class="toggle-track" id="refTrack"><div class="toggle-thumb"></div></div>
                 <span style="font-size:12px;color:var(--ink-faint)">参考资料库</span>
               </label>
@@ -101,14 +93,17 @@
               </div>
             </div>
             <div class="sc-body" id="scriptBody" style="padding:12px 16px"></div>
-            <div class="para-hint" id="paraHint" style="display:none">↑ 在正文中拖选任意词句，松开后可在下方对话中修改</div>
+            <div class="para-hint" id="paraHint" style="display:none">↑ 拖选句子后可修改脚本，或点击「信源请求」在右侧查阅参考文献</div>
             <div class="sc-foot">字数：<strong id="wordCt">0</strong> 字</div>
           </div>
-          <!-- 选中内容对话修改 -->
+          <!-- 段落对话修改卡 -->
           <div class="chat-card" id="chatCard" style="display:none">
             <div class="chat-card-head">
               <span class="chat-card-title" id="chatCardTitle">选中内容修改</span>
-              <button type="button" class="prev-close" onclick="closeChat()">✕</button>
+              <div class="chat-head-actions">
+                <button type="button" class="chat-src-btn" id="sourceReqBtn" onclick="requestSources()" style="display:none">信源请求</button>
+                <button type="button" class="prev-close" onclick="closeChat()">✕</button>
+              </div>
             </div>
             <div class="chat-para-quote" id="chatParaQuote"></div>
             <div class="chat-msgs" id="chatMsgs"></div>
@@ -149,29 +144,18 @@
     </div>
   </div>
 
-  <!-- Library -->
-  <div class="library">
-    <div class="lib-head">
-      <div class="lib-head-row">
-        <span class="lib-label">参考资料库</span>
-        <span class="lib-count" id="libCount"></span>
+  <div class="citations-panel" id="citationsPanel">
+    <div class="cit-head"><span class="cit-label">参考文献</span></div>
+    <div class="cit-body" id="citBody">
+      <div class="cit-empty" id="citEmpty">
+        <div class="cit-empty-icon">📚</div>
+        <div>生成脚本草稿后，拖选句子并点击「信源请求」，此处将列出相关知识点信源</div>
       </div>
-    </div>
-    <div class="doc-list" id="docList">
-      <div class="lib-empty">
-        <div class="lib-empty-icon">📂</div>
-        <div>选择栏目后显示<br>该栏目下的参考文稿</div>
-      </div>
-    </div>
-    <div class="preview-panel" id="prevPanel">
-      <div class="prev-head">
-        <span id="prevTitle">文稿预览</span>
-        <button type="button" class="prev-close" onclick="closePrev()">✕</button>
-      </div>
-      <div class="prev-body" id="prevBody"></div>
+      <div class="cit-list" id="citList" hidden></div>
     </div>
   </div>
 </div>
+
 
 <!-- Modal: API Key -->
 <div class="modal-bg" id="apiKeyModal">

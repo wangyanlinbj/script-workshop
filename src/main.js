@@ -37,6 +37,7 @@ let __creatorIdentityTimer;
 const S = {
   columns: [],
   docs: {},
+  expandedCols: new Set(),
   activeCol: null,
   script: '',
   selection: null,      // { start, end, text } 鼠标拖选范围（相对 S.script）
@@ -45,6 +46,8 @@ const S = {
   selDesc: '',
   currentProvider: 'doubao', // 'doubao' | 'deepseek'
   useRef: true,         // whether to inject reference docs into prompt
+  sourceEntries: [],    // { id, sentence, content, createdAt }
+  activeSourceId: null,
 };
 
 /**
@@ -149,7 +152,10 @@ function init() {
     try { S.docs = JSON.parse(savedDocs); } catch {}
   }
 
+  loadExpandedCols();
+  loadSourceEntries();
   renderColumns();
+  renderCitationsPanel();
 
   KEY_FIELDS.forEach(k => {
     const v = ls(k);
@@ -251,12 +257,14 @@ async function handleFolderUpload(e) {
       if (existing >= 0) S.docs[col.id][existing] = docEntry;
       else S.docs[col.id].push(docEntry);
     }
+    S.expandedCols.add(col.id);
   }
 
   prog.classList.remove('show');
 
   try { lss('columns', JSON.stringify(S.columns)); } catch {}
   try { lss('docs', JSON.stringify(S.docs)); } catch {}
+  persistExpandedCols();
 
   renderColumns();
   showToast(`✓ 已导入 ${folderNames.length} 个栏目`);
@@ -285,26 +293,70 @@ function guessEmoji(name) {
 }
 
 // ═══════════════════════════════════════════
-// UI: 栏目列表
+// UI: 栏目列表（含参考文稿）
 // ═══════════════════════════════════════════
+function loadExpandedCols() {
+  S.expandedCols = new Set();
+  try {
+    const raw = ls('expandedCols');
+    if (raw) JSON.parse(raw).forEach(id => S.expandedCols.add(id));
+  } catch {}
+}
+
+function persistExpandedCols() {
+  try { lss('expandedCols', JSON.stringify([...S.expandedCols])); } catch {}
+}
+
+function toggleColExpand(e, colId) {
+  e.stopPropagation();
+  if (S.expandedCols.has(colId)) S.expandedCols.delete(colId);
+  else S.expandedCols.add(colId);
+  persistExpandedCols();
+  renderColumns();
+}
+
+function renderColDocsHtml(colId) {
+  const docs = S.docs[colId] || [];
+  if (docs.length === 0) {
+    return '<div class="col-docs-empty">暂无参考文稿</div>';
+  }
+  return docs.map(doc => `
+    <div class="doc-item" id="di_${colId}_${doc.id}" onclick="previewDoc(event,'${colId}','${doc.id}')">
+      <div class="doc-icon">${docIcon(doc.name)}</div>
+      <div class="doc-info">
+        <div class="doc-name">${escHtml(doc.name)}</div>
+        <div class="doc-meta"><span>${doc.size}</span><span>${doc.date}</span></div>
+      </div>
+    </div>`).join('');
+}
+
 function renderColumns() {
   const list = document.getElementById('colList');
+  if (!list) return;
   if (S.columns.length === 0) {
     list.innerHTML = `<div style="padding:28px 12px;text-align:center;color:var(--ink-faint);font-size:13px;line-height:2">
       <div style="font-size:28px;margin-bottom:8px">📁</div>
-      点击「+ 上传文件夹」<br>添加栏目文档
+      点击「+ 上传文件夹」<br>添加栏目与参考文稿
     </div>`;
     return;
   }
   list.innerHTML = S.columns.map(col => {
     const cnt = (S.docs[col.id] || []).length;
-    return `<div class="col-item ${S.activeCol === col.id ? 'active' : ''}" onclick="selectCol('${col.id}')">
-      <div class="col-icon">${col.emoji}</div>
-      <div class="col-info">
-        <div class="col-name">${escHtml(col.name)}</div>
-        <div class="col-sub">${cnt > 0 ? cnt + ' 篇文稿' : '暂无文稿'}</div>
+    const expanded = S.expandedCols.has(col.id);
+    const active = S.activeCol === col.id;
+    return `<div class="col-group${active ? ' active' : ''}">
+      <div class="col-row">
+        <button type="button" class="col-expand${expanded ? ' open' : ''}" onclick="toggleColExpand(event,'${col.id}')" title="${expanded ? '收起文稿' : '展开文稿'}" aria-expanded="${expanded}">▸</button>
+        <div class="col-main" onclick="selectCol('${col.id}')">
+          <div class="col-icon">${col.emoji}</div>
+          <div class="col-info">
+            <div class="col-name">${escHtml(col.name)}</div>
+            <div class="col-sub">${cnt > 0 ? cnt + ' 篇参考文稿' : '暂无参考文稿'}</div>
+          </div>
+        </div>
+        <button type="button" class="col-del" onclick="deleteCol(event,'${col.id}')" title="删除栏目">✕</button>
       </div>
-      <button class="col-del" onclick="deleteCol(event,'${col.id}')" title="删除栏目">✕</button>
+      <div class="col-docs${expanded ? ' open' : ''}">${renderColDocsHtml(col.id)}</div>
     </div>`;
   }).join('');
 }
@@ -313,6 +365,8 @@ function deleteCol(e, colId) {
   e.stopPropagation();
   S.columns = S.columns.filter(c => c.id !== colId);
   delete S.docs[colId];
+  S.expandedCols.delete(colId);
+  persistExpandedCols();
   if (S.activeCol === colId) {
     S.activeCol = null;
     resetEditor();
@@ -325,11 +379,11 @@ function deleteCol(e, colId) {
 
 function selectCol(id) {
   S.activeCol = id;
+  S.expandedCols.add(id);
+  persistExpandedCols();
   const col = S.columns.find(c => c.id === id);
   renderColumns();
   showEditorArea(col);
-  renderDocs(id);
-  // Reset writing area
   document.getElementById('outlineInput').value = '';
   updateCC();
   document.getElementById('scriptCard').classList.remove('show');
@@ -355,32 +409,7 @@ function resetEditor() {
   document.getElementById('emptyState').style.display = 'flex';
   document.getElementById('edActive').style.display = 'none';
   document.getElementById('edToolbar').innerHTML = `<span style="font-size:12px;color:var(--ink-faint)">← 选择栏目开始创作</span>`;
-  document.getElementById('docList').innerHTML = `<div class="lib-empty"><div class="lib-empty-icon">📂</div><div>选择栏目后显示<br>该栏目下的参考文稿</div></div>`;
-  document.getElementById('libCount').textContent = '';
-}
-
-// ═══════════════════════════════════════════
-// UI: 文稿列表
-// ═══════════════════════════════════════════
-function renderDocs(colId) {
-  const list = document.getElementById('docList');
-  const docs = S.docs[colId] || [];
-  document.getElementById('libCount').textContent = docs.length > 0 ? docs.length + ' 篇' : '';
-  if (docs.length === 0) {
-    list.innerHTML = `<div class="lib-empty"><div class="lib-empty-icon">📄</div><div>该栏目暂无参考文稿<br>请在文件夹中添加文档后重新上传</div></div>`;
-    return;
-  }
-  list.innerHTML = docs.map(doc => `
-    <div class="doc-item" id="di_${doc.id}" onclick="previewDoc('${colId}','${doc.id}')">
-      <div class="doc-icon">${docIcon(doc.name)}</div>
-      <div class="doc-info">
-        <div class="doc-name">${escHtml(doc.name)}</div>
-        <div class="doc-meta">
-          <span>${doc.size}</span>
-          <span>${doc.date}</span>
-        </div>
-      </div>
-    </div>`).join('');
+  closePrev();
 }
 
 function docIcon(n) {
@@ -390,18 +419,19 @@ function docIcon(n) {
   return '📄';
 }
 
-function previewDoc(colId, docId) {
+function previewDoc(e, colId, docId) {
+  e?.stopPropagation?.();
   const doc = (S.docs[colId] || []).find(d => d.id === docId);
   if (!doc) return;
   document.querySelectorAll('.doc-item').forEach(el => el.classList.remove('active-ref'));
-  document.getElementById('di_' + docId)?.classList.add('active-ref');
+  document.getElementById(`di_${colId}_${docId}`)?.classList.add('active-ref');
   document.getElementById('prevTitle').textContent = doc.name;
   const preview = (doc.content || '（无内容）').slice(0, 2000) + (doc.content?.length > 2000 ? '\n…（仅显示前2000字）' : '');
   document.getElementById('prevBody').textContent = preview;
   document.getElementById('prevPanel').classList.add('show');
 }
 
-function closePrev() { document.getElementById('prevPanel').classList.remove('show'); }
+function closePrev() { document.getElementById('prevPanel')?.classList.remove('show'); }
 
 // ═══════════════════════════════════════════
 // AI Generation
@@ -460,26 +490,56 @@ function initCreatorIdentity() {
   }
 }
 
+function hasReferenceDocs() {
+  if (!S.useRef || !S.activeCol) return false;
+  return (S.docs[S.activeCol] || []).some(d => (d.content || '').trim());
+}
+
 function buildRefsBlock() {
   if (!S.useRef) return '';
-  const refs = (S.docs[S.activeCol] || []).filter(d => d.content)
-    .map((d, i) => `【参考文稿${i + 1}：${d.name}】\n${d.content.slice(0, 2500)}`).join('\n\n---\n\n');
-  if (!refs) return '';
-  return `\n\n---\n\n以下是该栏目的参考文稿，请分析并严格学习其表达风格、句式习惯与开场方式：\n\n${refs}`;
+  const docs = (S.docs[S.activeCol] || []).filter(d => (d.content || '').trim());
+  if (docs.length === 0) return '';
+  const refs = docs
+    .map((d, i) => `【参考文稿${i + 1}：${d.name}】\n${d.content.slice(0, 2500)}`)
+    .join('\n\n---\n\n');
+  return `
+
+---
+
+【参考资料库 · 风格仿写要求】
+以下文稿来自当前栏目，是你写本期脚本时的风格范本。请先通读，再动笔。
+
+你必须在语言风格与文字结构上与参考文稿保持一致，包括但不限于：
+- 用词口气：口语/书面程度、人称、幽默或严肃调性、惯用说法
+- 句式节奏：短句长句比例、设问/反问频率、排比或递进等修辞习惯
+- 段落结构：开场方式、分段习惯、转折衔接、举例位置、收尾收束
+- 信息展开：先抛问题再解释、先现象再机理等讲述顺序
+
+可以替换为本期大纲的主题与事实，但不要写成另一种频道语气；禁止明显偏离参考文稿的叙述框架。
+
+【参考文稿正文】
+${refs}`;
 }
 
 function buildSystemPrompt() {
   const refsBlock = buildRefsBlock();
-  return `${getCreatorIdentity()}${refsBlock}
+  const mimicNote = refsBlock
+    ? '\n\n继续执行上方的风格仿写要求：成稿的语言风格与段落结构须让人听出是「同一栏目」。'
+    : '';
+  return `${getCreatorIdentity()}${refsBlock}${mimicNote}
 
 直接输出脚本正文，不要标注格式说明或结构标题。`;
 }
 
 function buildGenerateUserPrompt(outline) {
+  const refHint = hasReferenceDocs()
+    ? '\n\n本期须严格模仿 system 中参考文稿的语言风格与文字结构（口气、句式、段落编排、讲述顺序），仅替换为本期大纲的主题内容。'
+    : '';
   return `【创作大纲】
 ${outline}
 
-请根据上方的「创作者身份」要求与本期创作大纲，生成约500字的视频逐字稿，适合对镜头直接口播。`;
+请根据上方的「创作者身份」要求与本期创作大纲，生成约500字的视频逐字稿，适合对镜头直接口播。
+内容须基于科学事实，不要瞎编：不得虚构数据、研究结论、机构观点或文献；不确定处用谨慎表述或省略，勿捏造。${refHint}`;
 }
 
 /** 从非 2xx 响应里尽量读出可读错误（兼容 JSON / HTML / 纯文本） */
@@ -639,6 +699,7 @@ async function generate() {
     if (S.script.trim()) {
       document.getElementById('paraHint').style.display = 'block';
     }
+    updateSourceReqBtn();
     body.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
   }
 }
@@ -663,11 +724,6 @@ async function confirmScript() {
     renderMeta(parsed.titles || [], parsed.descs || []);
   } catch {
     renderMeta(['大脑为什么需要睡眠来记忆', '你以为在睡觉其实在学习', '记忆怎么从短期变长期'], ['睡眠才是记忆巩固的关键一步', '熬夜复习为什么效果这么差']);
-  }
-  try {
-    await exportWord();
-  } catch (e) {
-    showToast('❌ Word 导出失败：' + (e.message || e));
   }
 }
 
@@ -785,13 +841,14 @@ function toggleRefMode() {
   S.useRef = !S.useRef;
   lss('useRef', String(S.useRef));
   updateRefToggleUI();
-  showToast(S.useRef ? '✓ 已开启参考资料库' : '已关闭参考资料库（自由创作模式）');
+  showToast(S.useRef ? '✓ 已开启：生成时将模仿参考文稿的风格与结构' : '已关闭参考资料库（自由创作模式）');
 }
 
 function updateRefToggleUI() {
   document.getElementById('refTrack')?.classList.toggle('on', S.useRef);
 }
 
+// ═══════════════════════════════════════════
 // ═══════════════════════════════════════════
 // Script display & free text selection
 // ═══════════════════════════════════════════
@@ -815,10 +872,8 @@ function getSelectionInScript() {
   const body = document.getElementById('scriptBody');
   const sel = window.getSelection();
   if (!body || !sel || sel.rangeCount === 0 || sel.isCollapsed) return null;
-
   const range = sel.getRangeAt(0);
   if (!body.contains(range.commonAncestorContainer)) return null;
-
   const measure = document.createRange();
   measure.selectNodeContents(body);
   measure.setEnd(range.startContainer, range.startOffset);
@@ -826,13 +881,13 @@ function getSelectionInScript() {
   measure.setEnd(range.endContainer, range.endOffset);
   const end = measure.toString().length;
   if (start === end) return null;
-
   const text = S.script.slice(start, end);
   if (!text.trim()) return null;
   return { start, end, text };
 }
 
 function onScriptMouseUp() {
+  if (document.getElementById('scriptBody')?.classList.contains('streaming')) return;
   requestAnimationFrame(() => {
     const hit = getSelectionInScript();
     if (!hit) return;
@@ -847,16 +902,14 @@ function openSelectionFeedback({ start, end, text }) {
     S.chatHistory = [];
     document.getElementById('chatMsgs').innerHTML = '';
   }
-
   const preview = text.length > 280 ? text.slice(0, 280) + '…' : text;
   document.getElementById('chatCardTitle').textContent = `修改选中（${text.length} 字）`;
   document.getElementById('chatParaQuote').textContent = preview;
   document.getElementById('chatParaQuote').title = text;
-
-  const chatCard = document.getElementById('chatCard');
-  chatCard.style.display = 'block';
-  chatCard.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+  document.getElementById('chatCard').style.display = 'block';
+  document.getElementById('chatCard').scrollIntoView({ behavior: 'smooth', block: 'nearest' });
   document.getElementById('chatInput').focus();
+  updateSourceReqBtn();
 }
 
 function closeChat() {
@@ -864,11 +917,11 @@ function closeChat() {
   S.chatHistory = [];
   document.getElementById('chatCard').style.display = 'none';
   try { window.getSelection()?.removeAllRanges(); } catch {}
+  updateSourceReqBtn();
 }
 
 // ═══════════════════════════════════════════
 // Selection feedback chat
-// ═══════════════════════════════════════════
 // ═══════════════════════════════════════════
 function appendChatMsg(role, text) {
   const msgs = document.getElementById('chatMsgs');
@@ -955,6 +1008,154 @@ function chatKeydown(e) {
   if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendParaChat(); }
 }
 
+
+// ═══════════════════════════════════════════
+// Citations / 信源请求
+// ═══════════════════════════════════════════
+function loadSourceEntries() {
+  try {
+    const raw = ls('sourceEntries');
+    if (raw) S.sourceEntries = JSON.parse(raw);
+  } catch { S.sourceEntries = []; }
+  if (!Array.isArray(S.sourceEntries)) S.sourceEntries = [];
+}
+
+function persistSourceEntries() {
+  try { lss('sourceEntries', JSON.stringify(S.sourceEntries.slice(0, 30))); } catch {}
+}
+
+function updateSourceReqBtn() {
+  const btn = document.getElementById('sourceReqBtn');
+  if (!btn) return;
+  const ok = S.script.trim() && S.selection?.text?.trim();
+  btn.style.display = ok ? 'inline-flex' : 'none';
+  btn.disabled = false;
+}
+
+function renderCitationsPanel(streamingText) {
+  const empty = document.getElementById('citEmpty');
+  const list = document.getElementById('citList');
+  if (!list) return;
+
+  if (streamingText !== undefined) {
+    if (empty) empty.hidden = true;
+    list.hidden = false;
+    list.innerHTML = '<div class="cit-entry active"><div class="cit-entry-head">正在检索信源…</div><div class="cit-content streaming">' + formatCitationContent(streamingText) + '</div></div>';
+    list.scrollTop = list.scrollHeight;
+    return;
+  }
+
+  if (!S.sourceEntries.length) {
+    if (empty) empty.hidden = false;
+    list.hidden = true;
+    list.innerHTML = '';
+    return;
+  }
+
+  if (empty) empty.hidden = true;
+  list.hidden = false;
+  const parts = S.sourceEntries.map(entry => {
+    const active = entry.id === S.activeSourceId;
+    const q = entry.sentence.length > 72 ? entry.sentence.slice(0, 72) + '…' : entry.sentence;
+    let h = '<div class="cit-entry' + (active ? ' active' : '') + '" data-id="' + entry.id + '">';
+    h += '<div class="cit-entry-head" onclick="toggleSourceEntry(\'' + entry.id + '\', event)">';
+    h += '<span class="cit-chevron' + (active ? ' open' : '') + '" aria-hidden="true">▸</span>';
+    h += '<div class="cit-entry-summary"><div>' + escHtml(q) + '</div>';
+    h += '<div class="cit-entry-time">' + escHtml(entry.createdAt || '') + '</div></div>';
+    if (active) {
+      h += '<button type="button" class="cit-collapse-btn" onclick="collapseSourceEntry(event,\'' + entry.id + '\')" title="收起">收起</button>';
+    }
+    h += '</div>';
+    if (active) {
+      h += '<div class="cit-entry-body">';
+      h += '<div class="cit-detail-quote">' + escHtml(entry.sentence) + '</div>';
+      h += '<div class="cit-content">' + formatCitationContent(entry.content) + '</div>';
+      h += '</div>';
+    }
+    h += '</div>';
+    return h;
+  });
+  list.innerHTML = parts.join('');
+}
+
+function toggleSourceEntry(id, e) {
+  if (e?.target?.closest?.('.cit-collapse-btn')) return;
+  e?.stopPropagation?.();
+  S.activeSourceId = S.activeSourceId === id ? null : id;
+  renderCitationsPanel();
+}
+
+function collapseSourceEntry(e, id) {
+  e?.stopPropagation?.();
+  e?.preventDefault?.();
+  S.activeSourceId = null;
+  renderCitationsPanel();
+}
+
+function renderCitationsError(msg) {
+  const list = document.getElementById('citList');
+  const empty = document.getElementById('citEmpty');
+  if (empty) empty.hidden = true;
+  if (list) {
+    list.hidden = false;
+    list.innerHTML = '<div class="cit-entry active"><div class="cit-content" style="color:var(--accent)">❌ ' + escHtml(msg) + '</div></div>';
+  }
+}
+
+async function requestSources() {
+  if (!S.script.trim()) { showToast('请先生成脚本草稿'); return; }
+  if (!S.selection?.text?.trim()) { showToast('请先拖选要查证信源的句子'); return; }
+
+  const sentence = S.selection.text.trim();
+  const btn = document.getElementById('sourceReqBtn');
+  if (btn) { btn.disabled = true; btn.textContent = '检索中…'; }
+
+  const sys = `你是科学传播与事实核查助手。针对视频脚本中的选中句子，列出用户可直接点开核实的参考文献。
+
+硬性规则（必须遵守）：
+1. 每条信源必须包含一个可访问的完整 URL（以 https:// 开头），用 Markdown 链接格式输出：[来源标题](https://...)
+2. 优先顺序：政府机构/学会官网、大学院系页面、PubMed/DOI 链接、百科/教材的正式在线页面、Google Books 或豆瓣读书等图书条目页、权威媒体的原文链接
+3. 禁止输出没有链接的条目；禁止只写「某教材」「某论文」而不给 URL
+4. 禁止编造、猜测或拼接不存在的网址；不确定该 URL 是否真实存在时，不要写这条，改为写「需人工检索」并给出 1～2 个可在 Google Scholar / 知网 / 机构官网使用的检索关键词
+5. 拆解句子中的 1～3 个知识点，每点 1～2 条带链接信源，总计约 3～6 条有效链接
+6. 每条除链接外，用一句话说明：该链接如何支撑原句中的哪一论断
+
+输出结构示例：
+### 知识点 1：……
+- [WHO：……](https://www.who.int/...) — 说明……
+- [Nature 新闻：……](https://www.nature.com/...) — 说明……`;
+
+  const prompt = `【完整脚本（语境参考，节选）】\n${S.script.slice(0, 2500)}\n\n【待查证句子】\n${sentence}\n\n请列出与上述句子相关的可点击参考文献。每条必须是带 https 链接的 Markdown 格式，确保用户复制链接即可在浏览器中打开核实。`;
+
+  let raw = '';
+  renderCitationsPanel('');
+  try {
+    await callStream(prompt, sys, t => {
+      raw += t;
+      renderCitationsPanel(raw);
+    });
+    persistApiSettings();
+    const entry = {
+      id: 'src_' + Date.now(),
+      sentence,
+      content: raw.trim(),
+      createdAt: new Date().toLocaleString('zh-CN'),
+    };
+    S.sourceEntries.unshift(entry);
+    S.activeSourceId = entry.id;
+    persistSourceEntries();
+    renderCitationsPanel();
+    showToast('✓ 信源已写入参考文献');
+  } catch (e) {
+    renderCitationsError(e.message);
+    showToast('❌ ' + e.message);
+  } finally {
+    if (btn) { btn.disabled = false; btn.textContent = '信源请求'; }
+    updateSourceReqBtn();
+  }
+}
+
+
 // ═══════════════════════════════════════════
 // Settings
 // ═══════════════════════════════════════════
@@ -984,6 +1185,24 @@ function saveApiKeys() {
 function updateCC() { document.getElementById('ccNum').textContent = document.getElementById('outlineInput').value.length; }
 function formatSize(b) { return b < 1024 ? b + 'B' : b < 1048576 ? (b / 1024).toFixed(1) + 'KB' : (b / 1048576).toFixed(1) + 'MB'; }
 function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
+
+function formatCitationContent(text) {
+  const s = String(text || '');
+  const parts = [];
+  const re = /\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)|(https?:\/\/[^\s<>"'\u4e00-\u9fff]+)/g;
+  let last = 0;
+  let m;
+  while ((m = re.exec(s)) !== null) {
+    if (m.index > last) parts.push(escHtml(s.slice(last, m.index)));
+    const url = m[2] || m[3];
+    const label = m[1] || url;
+    parts.push(`<a class="cit-link" href="${escHtml(url)}" target="_blank" rel="noopener noreferrer">${escHtml(label)}</a>`);
+    last = m.index + m[0].length;
+  }
+  if (last < s.length) parts.push(escHtml(s.slice(last)));
+  return parts.join('').replace(/\n/g, '<br>');
+}
+
 function escHtml(s) { return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
 
 function openModal(id) { document.getElementById(id).classList.add('show'); }
@@ -1016,6 +1235,9 @@ Object.assign(window, {
   confirmScript,
   closeChat,
   sendParaChat,
+  requestSources,
+  toggleSourceEntry,
+  collapseSourceEntry,
   chatKeydown,
   copyFull,
   exportMd,
@@ -1026,5 +1248,6 @@ Object.assign(window, {
   saveApiKeys,
   selectCol,
   deleteCol,
+  toggleColExpand,
   pickMeta,
 });
