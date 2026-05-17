@@ -3,7 +3,8 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>脚本工坊</title>
+  <title>周树人</title>
+  <link rel="icon" href="/logo.png" type="image/png" />
   <link href="https://fonts.googleapis.com/css2?family=Noto+Serif+SC:wght@400;600;700&family=Noto+Sans+SC:wght@300;400;500&display=swap" rel="stylesheet" />
   <link rel="stylesheet" href="/src/style.css" />
 </head>
@@ -12,8 +13,8 @@
 <!-- Header -->
 <header>
   <div class="logo">
-    <div class="logo-mark">✦</div>
-    脚本工坊
+    <img class="logo-mark" src="/logo.png" alt="周树人" width="28" height="28" />
+    周树人
   </div>
   <div class="header-right">
     <div style="font-size:11px;color:rgba(247,244,239,0.45);margin-right:4px">AI 引擎</div>
@@ -54,6 +55,21 @@
         <div class="empty-desc">点击左侧「+ 上传文件夹」添加栏目<br>然后选择栏目，输入大纲生成脚本</div>
       </div>
       <div id="edActive" style="display:none;flex-direction:column;gap:22px;">
+        <div class="identity-block" id="identityBlock">
+          <button type="button" class="identity-head" id="identityToggle" onclick="toggleCreatorIdentity()" aria-expanded="true">
+            <span class="identity-title">创作者身份</span>
+            <span class="identity-chevron" id="identityChevron">▼</span>
+          </button>
+          <div class="identity-body" id="identityBody">
+            <textarea class="outline-area identity-area" id="creatorIdentityInput" rows="14"
+              placeholder="定义 AI 扮演的创作者角色与脚本结构、风格要求…"
+              oninput="onCreatorIdentityInput()"></textarea>
+            <div class="identity-foot">
+              <span class="char-ct">已输入 <em id="identityCcNum">0</em> 字</span>
+              <button type="button" class="identity-reset-btn" onclick="resetCreatorIdentity()">恢复默认</button>
+            </div>
+          </div>
+        </div>
         <div>
           <div class="sec-label">创作大纲</div>
           <textarea class="outline-area" id="outlineInput" rows="4"
@@ -85,13 +101,13 @@
               </div>
             </div>
             <div class="sc-body" id="scriptBody" style="padding:12px 16px"></div>
-            <div class="para-hint" id="paraHint" style="display:none">↑ 点击任意段落，在下方对话框中进行定向修改</div>
+            <div class="para-hint" id="paraHint" style="display:none">↑ 在正文中拖选任意词句，松开后可在下方对话中修改</div>
             <div class="sc-foot">字数：<strong id="wordCt">0</strong> 字</div>
           </div>
-          <!-- 段落对话修改卡 -->
+          <!-- 选中内容对话修改 -->
           <div class="chat-card" id="chatCard" style="display:none">
             <div class="chat-card-head">
-              <span class="chat-card-title" id="chatCardTitle">段落修改</span>
+              <span class="chat-card-title" id="chatCardTitle">选中内容修改</span>
               <button type="button" class="prev-close" onclick="closeChat()">✕</button>
             </div>
             <div class="chat-para-quote" id="chatParaQuote"></div>
@@ -127,6 +143,7 @@
       </div>
       <div class="exp-actions">
         <button type="button" class="exp-btn secondary" onclick="copyFull()">复制全文</button>
+        <button type="button" class="exp-btn secondary" onclick="exportWord()">↓ 导出 Word</button>
         <button type="button" class="exp-btn primary" onclick="exportMd()">↓ 导出 Markdown</button>
       </div>
     </div>
@@ -160,7 +177,7 @@
 <div class="modal-bg" id="apiKeyModal">
   <div class="modal">
     <div class="modal-title">配置 API Key &amp; 模型</div>
-    <div class="modal-sub">Key 与模型 ID 仅存储在本地浏览器，不会上传至任何服务器。具体调用哪个模型，由你在下方填写的「模型 ID」决定。</div>
+    <div class="modal-sub">Key 与模型 ID 仅存储在本地浏览器，不会上传至任何服务器。填写后会自动保存；生成脚本、确认稿件等操作成功后也会再次写入，刷新页面后仍保留。具体模型由「模型 ID」决定。</div>
 
     <!-- 豆包 -->
     <div class="key-section">

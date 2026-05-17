@@ -1,6 +1,36 @@
+import { Document, Packer, Paragraph, TextRun } from 'docx';
+
 /** 标题/简介候选项（用于点击选择，避免把文案写进 onclick 造成引号与特殊字符问题） */
 let __metaTitles = [];
 let __metaDescs = [];
+
+const DEFAULT_CREATOR_IDENTITY = `你是一个擅长将复杂知识转化为短视频脚本的内容专家，
+擅长用拟人化、生活化表达，让内容有趣但不失科学严谨。
+
+请严格按照以下结构生成脚本：
+
+1. Hook引入（制造兴趣/误解/反常识）
+2. 角色或对象登场（可拟人化）
+3. 抛出核心问题
+4. 机制解释（必须清晰、通俗、完整）
+5. 类比或拟人强化理解
+6. 扩展或对比（可选）
+7. 收尾总结（回扣主题或提问）
+
+风格要求：
+- 像聊天，不书面
+- 解释清晰、科学
+- 可加入拟人对话
+- 多用短句
+- 避免废话
+
+内容策略：
+- 必须有钩子
+- 必须讲清一个核心知识点
+- 必须有“为什么”
+- 尽量用生活化类比`;
+
+let __creatorIdentityTimer;
 
 // State & Provider Config
 // ═══════════════════════════════════════════
@@ -9,9 +39,8 @@ const S = {
   docs: {},
   activeCol: null,
   script: '',
-  paragraphs: [],       // script split into editable paragraphs
-  selectedParaIdx: -1,
-  chatHistory: [],      // multi-turn chat for current paragraph
+  selection: null,      // { start, end, text } 鼠标拖选范围（相对 S.script）
+  chatHistory: [],      // multi-turn chat for current selection
   selTitle: '',
   selDesc: '',
   currentProvider: 'doubao', // 'doubao' | 'deepseek'
@@ -47,7 +76,7 @@ const PROVIDER_CFG = {
     name: 'OpenRouter',
     extraHeaders: {
       'HTTP-Referer': 'http://localhost:5173/',
-      'X-Title': '脚本工坊',
+      'X-Title': '周树人',
     },
   },
 };
@@ -66,6 +95,43 @@ const KEY_FIELDS = [
   'deepseekKey', 'deepseekModelId',
   'openrouterKey', 'openrouterModelId',
 ];
+
+/** 读取配置：优先表单当前值，其次 localStorage（便于未点「保存」也能用） */
+function fieldValue(key) {
+  const el = document.getElementById(key);
+  const fromInput = (el?.value || '').trim();
+  if (fromInput) return fromInput;
+  return (ls(key) || '').trim();
+}
+
+/** 将 API 设置写入 localStorage；clearEmpty 为 true 时允许清空已删字段 */
+function persistApiSettings({ clearEmpty = false, silent = true } = {}) {
+  KEY_FIELDS.forEach(k => {
+    const el = document.getElementById(k);
+    if (!el) return;
+    const v = el.value.trim();
+    if (v) lss(k, v);
+    else if (clearEmpty) { try { localStorage.removeItem(k); } catch {} }
+  });
+  lss('currentProvider', S.currentProvider);
+  if (!silent) showToast('✓ 已保存');
+}
+
+let __apiPersistTimer;
+function bindApiSettingsPersistence() {
+  const modal = document.getElementById('apiKeyModal');
+  if (!modal || modal.dataset.persistBound) return;
+  modal.dataset.persistBound = '1';
+  KEY_FIELDS.forEach(k => {
+    const el = document.getElementById(k);
+    if (!el) return;
+    el.addEventListener('input', () => {
+      clearTimeout(__apiPersistTimer);
+      __apiPersistTimer = setTimeout(() => persistApiSettings(), 500);
+    });
+    el.addEventListener('change', () => persistApiSettings());
+  });
+}
 
 function init() {
   S.currentProvider = ls('currentProvider') || 'doubao';
@@ -86,8 +152,12 @@ function init() {
   renderColumns();
 
   KEY_FIELDS.forEach(k => {
-    const v = ls(k); if (v) document.getElementById(k).value = v;
+    const v = ls(k);
+    const el = document.getElementById(k);
+    if (el && v) el.value = v;
   });
+  bindApiSettingsPersistence();
+  initCreatorIdentity();
 
   const metaWrap = document.getElementById('metaWrap');
   if (metaWrap && !metaWrap.dataset.metaClickBound) {
@@ -266,7 +336,7 @@ function selectCol(id) {
   document.getElementById('scriptLabel').style.display = 'none';
   document.getElementById('metaWrap').classList.remove('show');
   document.getElementById('exportBar').classList.remove('show');
-  S.script = ''; S.paragraphs = []; S.selectedParaIdx = -1; S.chatHistory = [];
+  S.script = ''; S.selection = null; S.chatHistory = [];
   S.selTitle = ''; S.selDesc = '';
   document.getElementById('chatCard').style.display = 'none';
   document.getElementById('paraHint').style.display = 'none';
@@ -336,24 +406,80 @@ function closePrev() { document.getElementById('prevPanel').classList.remove('sh
 // ═══════════════════════════════════════════
 // AI Generation
 // ═══════════════════════════════════════════
+function getCreatorIdentity() {
+  const el = document.getElementById('creatorIdentityInput');
+  const v = (el?.value || ls('creatorIdentity') || DEFAULT_CREATOR_IDENTITY).trim();
+  return v || DEFAULT_CREATOR_IDENTITY;
+}
+
+function updateIdentityCC() {
+  const el = document.getElementById('identityCcNum');
+  const input = document.getElementById('creatorIdentityInput');
+  if (el && input) el.textContent = input.value.length;
+}
+
+function persistCreatorIdentity() {
+  const el = document.getElementById('creatorIdentityInput');
+  if (!el) return;
+  lss('creatorIdentity', el.value);
+}
+
+function onCreatorIdentityInput() {
+  updateIdentityCC();
+  clearTimeout(__creatorIdentityTimer);
+  __creatorIdentityTimer = setTimeout(persistCreatorIdentity, 500);
+}
+
+function toggleCreatorIdentity() {
+  const block = document.getElementById('identityBlock');
+  const btn = document.getElementById('identityToggle');
+  if (!block) return;
+  const collapsed = block.classList.toggle('collapsed');
+  lss('creatorIdentityCollapsed', collapsed ? 'true' : 'false');
+  if (btn) btn.setAttribute('aria-expanded', collapsed ? 'false' : 'true');
+}
+
+function resetCreatorIdentity() {
+  const el = document.getElementById('creatorIdentityInput');
+  if (!el) return;
+  el.value = DEFAULT_CREATOR_IDENTITY;
+  updateIdentityCC();
+  persistCreatorIdentity();
+  showToast('已恢复默认创作者身份');
+}
+
+function initCreatorIdentity() {
+  const el = document.getElementById('creatorIdentityInput');
+  if (!el) return;
+  el.value = ls('creatorIdentity') || DEFAULT_CREATOR_IDENTITY;
+  updateIdentityCC();
+  const block = document.getElementById('identityBlock');
+  if (block && ls('creatorIdentityCollapsed') === 'true') {
+    block.classList.add('collapsed');
+    document.getElementById('identityToggle')?.setAttribute('aria-expanded', 'false');
+  }
+}
+
+function buildRefsBlock() {
+  if (!S.useRef) return '';
+  const refs = (S.docs[S.activeCol] || []).filter(d => d.content)
+    .map((d, i) => `【参考文稿${i + 1}：${d.name}】\n${d.content.slice(0, 2500)}`).join('\n\n---\n\n');
+  if (!refs) return '';
+  return `\n\n---\n\n以下是该栏目的参考文稿，请分析并严格学习其表达风格、句式习惯与开场方式：\n\n${refs}`;
+}
+
 function buildSystemPrompt() {
-  const refs = S.useRef
-    ? (S.docs[S.activeCol] || []).filter(d => d.content)
-        .map((d, i) => `【参考文稿${i + 1}：${d.name}】\n${d.content.slice(0, 2500)}`).join('\n\n---\n\n')
-    : '';
-  return `你是一位专业的知识科普类视频脚本创作者。
+  const refsBlock = buildRefsBlock();
+  return `${getCreatorIdentity()}${refsBlock}
 
-${refs ? `以下是该栏目的参考文稿，请分析并严格学习其风格：\n\n${refs}\n\n---` : '（不使用参考文稿，请以优质知识科普视频风格创作）'}
+直接输出脚本正文，不要标注格式说明或结构标题。`;
+}
 
-创作要求：
-1. ${refs ? '严格模仿参考文稿的表达风格、句式习惯和开场方式' : '使用生动有趣、口语化的表达风格'}
-2. 生成约500字的视频逐字稿，适合对镜头直接口播
-3. 开场用问题或反常识陈述吸引注意
-4. 用生活化类比解释专业概念，配合具体案例
-5. 语气口语化流畅，避免书面腔
-6. 结构：开场钩子 → 核心内容展开 → 收尾总结
+function buildGenerateUserPrompt(outline) {
+  return `【创作大纲】
+${outline}
 
-直接输出脚本正文，不要标注格式说明。`;
+请根据上方的「创作者身份」要求与本期创作大纲，生成约500字的视频逐字稿，适合对镜头直接口播。`;
 }
 
 /** 从非 2xx 响应里尽量读出可读错误（兼容 JSON / HTML / 纯文本） */
@@ -430,16 +556,18 @@ async function _callOpenAIStream(cfg, key, system, messages, onChunk) {
 }
 
 function resolveModelId() {
+  persistApiSettings();
   const cfg = PROVIDER_CFG[currentProvider()];
-  const id = (ls(cfg.modelKey) || '').trim();
+  const id = fieldValue(cfg.modelKey);
   if (!id) throw new Error(`请先在 ⚙ API Key 弹窗里填写 ${cfg.name} 的「模型 ID」`);
   return id;
 }
 
 function _getProviderKey() {
+  persistApiSettings();
   const provider = currentProvider();
   const cfg = PROVIDER_CFG[provider];
-  const key = (ls(cfg.keyId) || '').trim();
+  const key = fieldValue(cfg.keyId);
   if (!key) throw new Error(`请先在 ⚙ API Key 弹窗里填写 ${cfg.name} 的 API Key`);
   return { cfg, key };
 }
@@ -462,10 +590,10 @@ async function callStreamWithHistory(system, messages, onChunk) {
 async function generate() {
   const outline = document.getElementById('outlineInput').value.trim();
   if (!outline) { showToast('请先输入大纲内容'); return; }
+  persistCreatorIdentity();
 
   S.script = '';
-  S.paragraphs = [];
-  S.selectedParaIdx = -1;
+  S.selection = null;
   S.chatHistory = [];
   const body = document.getElementById('scriptBody');
   const card = document.getElementById('scriptCard');
@@ -491,8 +619,9 @@ async function generate() {
 
   try {
     const sys = buildSystemPrompt();
-    const prompt = `请根据以下大纲，生成约500字的知识科普类视频逐字稿：\n\n${outline}`;
+    const prompt = buildGenerateUserPrompt(outline);
     await callStream(prompt, sys, onChunk);
+    persistApiSettings();
     showToast('✓ 脚本生成完成');
   } catch (e) {
     body.style.whiteSpace = '';
@@ -505,14 +634,9 @@ async function generate() {
     body.classList.remove('streaming');
     btn.disabled = false;
     document.getElementById('genBtnTxt').textContent = '✦ 生成脚本';
-    // Parse into paragraphs for inline editing
-    S.paragraphs = S.script.split(/\n\n+/).map(p => p.trim()).filter(Boolean);
-    if (S.paragraphs.length <= 1) {
-      S.paragraphs = S.script.split(/\n/).map(p => p.trim()).filter(Boolean);
-    }
     body.style.whiteSpace = '';
-    renderScriptParagraphs();
-    if (S.paragraphs.length > 0) {
+    renderScriptContent();
+    if (S.script.trim()) {
       document.getElementById('paraHint').style.display = 'block';
     }
     body.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
@@ -534,10 +658,16 @@ async function confirmScript() {
   try {
     const onC = t => { raw += t; };
     await callStream(prompt, sys, onC);
+    persistApiSettings();
     const parsed = JSON.parse(raw.replace(/```json|```/g, '').trim());
     renderMeta(parsed.titles || [], parsed.descs || []);
   } catch {
     renderMeta(['大脑为什么需要睡眠来记忆', '你以为在睡觉其实在学习', '记忆怎么从短期变长期'], ['睡眠才是记忆巩固的关键一步', '熬夜复习为什么效果这么差']);
+  }
+  try {
+    await exportWord();
+  } catch (e) {
+    showToast('❌ Word 导出失败：' + (e.message || e));
   }
 }
 
@@ -586,6 +716,68 @@ function exportMd() {
   showToast('✓ 已导出 Markdown');
 }
 
+function sanitizeFilePart(name) {
+  return String(name || '')
+    .replace(/[\\/:*?"<>|]/g, '-')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .slice(0, 48) || '未命名';
+}
+
+function getWordExportFilename() {
+  const col = S.columns.find(c => c.id === S.activeCol);
+  const topic = document.getElementById('outlineInput')?.value.trim() || S.selTitle || '主题';
+  return `${sanitizeFilePart(col?.name || '栏目')}-${sanitizeFilePart(topic)}.docx`;
+}
+
+async function buildWordBlob() {
+  const col = S.columns.find(c => c.id === S.activeCol);
+  const outline = document.getElementById('outlineInput')?.value.trim() || '';
+  const date = new Date().toLocaleDateString('zh-CN');
+  const children = [];
+
+  if (S.selTitle) {
+    children.push(new Paragraph({ children: [new TextRun({ text: S.selTitle, bold: true, size: 32 })] }));
+  } else if (outline) {
+    children.push(new Paragraph({ children: [new TextRun({ text: outline, bold: true, size: 32 })] }));
+  }
+  if (S.selDesc) {
+    children.push(new Paragraph({ children: [new TextRun({ text: S.selDesc, italics: true, size: 24 })] }));
+  }
+  children.push(new Paragraph({ text: '' }));
+
+  for (const line of S.script.split('\n')) {
+    children.push(new Paragraph({
+      children: [new TextRun({ text: line, size: 24 })],
+      spacing: { after: 120, line: 360 },
+    }));
+  }
+
+  children.push(new Paragraph({ text: '' }));
+  children.push(new Paragraph({ children: [new TextRun({ text: `栏目：${col?.name || ''}`, size: 20, color: '666666' })] }));
+  children.push(new Paragraph({ children: [new TextRun({ text: `字数：${S.script.replace(/\s/g, '').length}字`, size: 20, color: '666666' })] }));
+  children.push(new Paragraph({ children: [new TextRun({ text: `生成日期：${date}`, size: 20, color: '666666' })] }));
+
+  const doc = new Document({ sections: [{ children }] });
+  return Packer.toBlob(doc);
+}
+
+function downloadBlob(blob, filename) {
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = filename;
+  a.click();
+  URL.revokeObjectURL(url);
+}
+
+async function exportWord() {
+  if (!S.script) { showToast('还没有脚本内容'); return; }
+  const blob = await buildWordBlob();
+  downloadBlob(blob, getWordExportFilename());
+  showToast('✓ 已导出 Word：' + getWordExportFilename());
+}
+
 // ═══════════════════════════════════════════
 // Ref Toggle
 // ═══════════════════════════════════════════
@@ -601,26 +793,66 @@ function updateRefToggleUI() {
 }
 
 // ═══════════════════════════════════════════
-// Paragraph Rendering & Selection
+// Script display & free text selection
 // ═══════════════════════════════════════════
-function renderScriptParagraphs() {
+function renderScriptContent() {
   const body = document.getElementById('scriptBody');
-  body.innerHTML = S.paragraphs.map((p, i) =>
-    `<div class="para-block${S.selectedParaIdx === i ? ' selected' : ''}" onclick="selectParagraph(${i})">${escHtml(p)}</div>`
-  ).join('');
+  if (!body) return;
+  body.textContent = S.script;
+  body.classList.add('script-selectable');
   document.getElementById('wordCt').textContent = S.script.replace(/\s/g, '').length;
+  bindScriptSelectionEditor();
 }
 
-function selectParagraph(idx) {
-  const switched = S.selectedParaIdx !== idx;
-  S.selectedParaIdx = idx;
-  if (switched) {
+function bindScriptSelectionEditor() {
+  const body = document.getElementById('scriptBody');
+  if (!body || body.dataset.selectionBound) return;
+  body.dataset.selectionBound = '1';
+  body.addEventListener('mouseup', onScriptMouseUp);
+}
+
+function getSelectionInScript() {
+  const body = document.getElementById('scriptBody');
+  const sel = window.getSelection();
+  if (!body || !sel || sel.rangeCount === 0 || sel.isCollapsed) return null;
+
+  const range = sel.getRangeAt(0);
+  if (!body.contains(range.commonAncestorContainer)) return null;
+
+  const measure = document.createRange();
+  measure.selectNodeContents(body);
+  measure.setEnd(range.startContainer, range.startOffset);
+  const start = measure.toString().length;
+  measure.setEnd(range.endContainer, range.endOffset);
+  const end = measure.toString().length;
+  if (start === end) return null;
+
+  const text = S.script.slice(start, end);
+  if (!text.trim()) return null;
+  return { start, end, text };
+}
+
+function onScriptMouseUp() {
+  requestAnimationFrame(() => {
+    const hit = getSelectionInScript();
+    if (!hit) return;
+    openSelectionFeedback(hit);
+  });
+}
+
+function openSelectionFeedback({ start, end, text }) {
+  const changed = !S.selection || S.selection.start !== start || S.selection.end !== end;
+  S.selection = { start, end, text };
+  if (changed) {
     S.chatHistory = [];
     document.getElementById('chatMsgs').innerHTML = '';
   }
-  renderScriptParagraphs();
-  document.getElementById('chatCardTitle').textContent = `修改第 ${idx + 1} 段（共 ${S.paragraphs.length} 段）`;
-  document.getElementById('chatParaQuote').textContent = S.paragraphs[idx];
+
+  const preview = text.length > 280 ? text.slice(0, 280) + '…' : text;
+  document.getElementById('chatCardTitle').textContent = `修改选中（${text.length} 字）`;
+  document.getElementById('chatParaQuote').textContent = preview;
+  document.getElementById('chatParaQuote').title = text;
+
   const chatCard = document.getElementById('chatCard');
   chatCard.style.display = 'block';
   chatCard.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
@@ -628,14 +860,15 @@ function selectParagraph(idx) {
 }
 
 function closeChat() {
-  S.selectedParaIdx = -1;
+  S.selection = null;
   S.chatHistory = [];
   document.getElementById('chatCard').style.display = 'none';
-  renderScriptParagraphs();
+  try { window.getSelection()?.removeAllRanges(); } catch {}
 }
 
 // ═══════════════════════════════════════════
-// Paragraph Chat
+// Selection feedback chat
+// ═══════════════════════════════════════════
 // ═══════════════════════════════════════════
 function appendChatMsg(role, text) {
   const msgs = document.getElementById('chatMsgs');
@@ -651,15 +884,19 @@ function appendChatMsg(role, text) {
 async function sendParaChat() {
   const inputEl = document.getElementById('chatInput');
   const input = inputEl.value.trim();
-  if (!input || S.selectedParaIdx < 0) return;
+  if (!input) return;
+  if (!S.selection) {
+    showToast('请先在脚本草稿中拖选要修改的文字');
+    return;
+  }
   inputEl.value = '';
 
   appendChatMsg('user', input);
 
-  // First turn: send full context; subsequent turns: just the instruction
+  const { text } = S.selection;
   const isFirst = S.chatHistory.length === 0;
   const userContent = isFirst
-    ? `完整脚本供参考：\n${S.script}\n\n需要修改的段落：\n${S.paragraphs[S.selectedParaIdx]}\n\n修改要求：${input}`
+    ? `完整脚本供参考：\n${S.script}\n\n需要修改的选中内容：\n${text}\n\n修改要求：${input}`
     : input;
   S.chatHistory.push({ role: 'user', content: userContent });
 
@@ -672,20 +909,22 @@ async function sendParaChat() {
   aiBody.classList.add('streaming');
 
   try {
-    const sys = '你是专业视频脚本编辑。根据用户的修改要求，对指定段落进行改写。只返回改写后的段落文本，不添加任何解释、前缀或引号。';
+    const sys = '你是专业视频脚本编辑。根据用户的修改要求，对脚本中被选中的片段进行改写。只返回改写后的片段正文，不添加任何解释、前缀或引号，不要输出未被选中的其他内容。';
     await callStreamWithHistory(sys, [...S.chatHistory], chunk => {
       aiText += chunk;
       aiBody.textContent = aiText;
       document.getElementById('chatMsgs').scrollTop = 99999;
     });
     S.chatHistory.push({ role: 'assistant', content: aiText });
+    persistApiSettings();
 
     const applyBtn = document.createElement('button');
     applyBtn.className = 'chat-apply-btn';
     applyBtn.textContent = '✓ 应用到脚本';
-    const capturedIdx = S.selectedParaIdx;
+    const capturedStart = S.selection.start;
+    const capturedEnd = S.selection.end;
     const capturedText = aiText;
-    applyBtn.onclick = () => applyParaEdit(capturedIdx, capturedText, applyBtn);
+    applyBtn.onclick = () => applySelectionEdit(capturedStart, capturedEnd, capturedText, applyBtn);
     aiEl.appendChild(applyBtn);
   } catch (e) {
     aiBody.textContent = '❌ ' + e.message;
@@ -695,12 +934,20 @@ async function sendParaChat() {
   }
 }
 
-function applyParaEdit(paraIdx, newText, applyBtn) {
-  S.paragraphs[paraIdx] = newText;
-  S.script = S.paragraphs.join('\n\n');
-  document.getElementById('chatParaQuote').textContent = newText;
-  renderScriptParagraphs();
-  if (applyBtn) { applyBtn.textContent = '✓ 已应用'; applyBtn.disabled = true; applyBtn.style.background = 'var(--success)'; }
+function applySelectionEdit(start, end, newText, applyBtn) {
+  S.script = S.script.slice(0, start) + newText + S.script.slice(end);
+  const newEnd = start + newText.length;
+  S.selection = { start, end: newEnd, text: newText };
+  renderScriptContent();
+  const preview = newText.length > 280 ? newText.slice(0, 280) + '…' : newText;
+  document.getElementById('chatParaQuote').textContent = preview;
+  document.getElementById('chatParaQuote').title = newText;
+  document.getElementById('chatCardTitle').textContent = `修改选中（${newText.length} 字）`;
+  if (applyBtn) {
+    applyBtn.textContent = '✓ 已应用';
+    applyBtn.disabled = true;
+    applyBtn.style.background = 'var(--success)';
+  }
   showToast('✓ 已应用修改');
 }
 
@@ -714,7 +961,7 @@ function chatKeydown(e) {
 function switchProvider(val) {
   if (!PROVIDER_CFG[val]) return;
   S.currentProvider = val;
-  lss('currentProvider', val);
+  persistApiSettings();
   showToast('已切换至 ' + PROVIDER_CFG[val].name);
 }
 
@@ -726,15 +973,9 @@ function updateProviderUI() {
 }
 
 function saveApiKeys() {
-  KEY_FIELDS.forEach(k => {
-    const el = document.getElementById(k);
-    if (!el) return;
-    const v = el.value.trim();
-    if (v) lss(k, v);
-    else { try { localStorage.removeItem(k); } catch {} }
-  });
+  persistApiSettings({ clearEmpty: true, silent: true });
   closeModal('apiKeyModal');
-  showToast('✓ 已保存');
+  showToast('✓ 已保存到本机，刷新后仍会保留');
 }
 
 // ═══════════════════════════════════════════
@@ -767,6 +1008,9 @@ Object.assign(window, {
   openApiKeyModal,
   generate,
   toggleRefMode,
+  toggleCreatorIdentity,
+  onCreatorIdentityInput,
+  resetCreatorIdentity,
   updateCC,
   copyScript,
   confirmScript,
@@ -775,12 +1019,12 @@ Object.assign(window, {
   chatKeydown,
   copyFull,
   exportMd,
+  exportWord,
   previewDoc,
   closePrev,
   closeModal,
   saveApiKeys,
   selectCol,
   deleteCol,
-  selectParagraph,
   pickMeta,
 });

@@ -1,10 +1,104 @@
-# 脚本工坊（Web）
+# 周树人（Web）
+
+知识科普类视频脚本辅助写作工具：上传栏目参考文稿 → 输入大纲 → AI 生成逐字稿 → 段落修改 → 标题/简介 → 导出 Markdown。
 
 从单文件 HTML 拆出的 **Vite** 项目：样式与逻辑分离、`npm` 管理依赖、支持热更新开发与一键构建静态资源。
 
+**仓库地址：** https://github.com/wangyanlinbj/script-workshop
+
+---
+
+## 同事快速开始
+
+适合第一次在本机使用、不需要改代码的同事。按顺序做即可。
+
+### 1. 准备环境
+
+| 需要 | 说明 |
+|------|------|
+| [Node.js](https://nodejs.org/) | 建议安装 **LTS** 版本（自带 `npm`） |
+| Git（可选） | 也可用 GitHub 网页 **Download ZIP** 解压代替 `git clone` |
+| 各厂商 API Key | 每人用自己的 Key，**不要**写进代码或提交到 GitHub |
+
+### 2. 获取代码
+
+**方式 A：克隆（推荐）**
+
+```bash
+git clone https://github.com/wangyanlinbj/script-workshop.git
+cd script-workshop
+```
+
+**方式 B：下载 ZIP**
+
+打开 https://github.com/wangyanlinbj/script-workshop → **Code** → **Download ZIP**，解压后进入文件夹。
+
+> 若仓库为**私有**，需仓库管理员在 GitHub **Settings → Collaborators** 邀请你的账号后再克隆。
+
+### 3. 安装并启动
+
+在**仓库根目录**（能看到 `package.json` 的目录）执行：
+
+```bash
+npm install
+npm run dev
+```
+
+终端出现类似下面一行即表示成功：
+
+```text
+➜  Local:   http://localhost:5173/
+```
+
+浏览器打开 **http://localhost:5173/**（若未自动打开，请手动访问）。
+
+> **必须用 `npm run dev` 启动**，不要直接双击 `index.html`。否则调用 AI 接口会被浏览器跨域拦截。
+
+### 4. 配置 API（每人本地单独保存）
+
+1. 点击右上角 **⚙ API Key**
+2. 顶部 **AI 引擎** 下拉选择：**豆包** / **DeepSeek** / **OpenRouter**
+3. 在弹窗中填写当前引擎对应的 **API Key** 和 **模型 ID**（具体模型由你填的 ID 决定，不在下拉里选版本）
+
+| 引擎 | API Key 获取 | 模型 ID 示例 |
+|------|----------------|--------------|
+| **豆包** | [火山引擎 ARK → API Key 管理](https://console.volcengine.com/ark/region:ark+cn-beijing/apiKey)（须为 ARK 专用 Key，不是通用 AccessKey） | 推荐填推理接入点 `ep-xxxxxxxx-xxxxx`；或公开模型如 `doubao-1-5-pro-32k-250115`（全小写、带版本后缀） |
+| **DeepSeek** | [platform.deepseek.com/api_keys](https://platform.deepseek.com/api_keys) | 如 `deepseek-chat`、`deepseek-reasoner` |
+| **OpenRouter** | [openrouter.ai/keys](https://openrouter.ai/keys) | 如 `anthropic/claude-sonnet-4.5`、`openai/gpt-4o`（见 [模型列表](https://openrouter.ai/models)） |
+
+保存后 Key 仅存在**本机浏览器**，换电脑或换浏览器需重新填写。
+
+### 5. 日常使用流程
+
+1. 左侧 **+ 上传文件夹**：选择含 `.docx` / `.txt` / `.md` 的栏目文件夹（顶层文件夹名 = 栏目名）
+2. 点击栏目 → 中间输入 **创作大纲** → 可开关 **参考资料库**（用右侧已导入文稿做风格参考）
+3. 点击 **✦ 生成脚本** → 可点击段落做定向修改 → **确认稿件** 生成标题/简介 → **导出 Markdown**
+
+### 6. 常见问题（同事向）
+
+| 现象 | 处理 |
+|------|------|
+| 浏览器打不开 `localhost:5173` | 确认终端里 `npm run dev` 仍在运行；若端口被占用，看终端是否改用了 `5174` 等，用终端里显示的地址访问 |
+| `Failed to fetch` / 网络请求失败 | 先确认是用 `npm run dev` 启动，不是直接打开 html 文件 |
+| 豆包 `API key format is incorrect` | 请使用 ARK 控制台创建的 API Key，不要用账号通用 AccessKey |
+| 豆包 `model ... does not exist` | 模型 ID 须全小写、用 `-` 分隔；推荐用 `ep-...` 接入点 ID |
+| OpenRouter / 部分国外模型失败 | 本机可能需要科学上网；或换豆包 / DeepSeek |
+| 栏目、文稿、Key 丢了 | 数据在各自浏览器 `localStorage`，清缓存、换电脑会丢失，需重新上传与配置 |
+
+### 7. 更新到最新版
+
+```bash
+cd script-workshop
+git pull
+npm install
+npm run dev
+```
+
+---
+
 ## 常用命令
 
-在项目目录 `web/` 下执行：
+在**仓库根目录**执行：
 
 ```bash
 npm install    # 首次或依赖变更后
@@ -24,14 +118,13 @@ npm run preview # 本地预览构建结果
 
 ## 关于「Load failed」与 CORS
 
-浏览器默认不允许直接调用 OpenAI / Anthropic / DeepSeek / 火山引擎 ARK 这几个域名（CORS 限制）。本项目通过 **Vite dev 代理**解决：
+浏览器默认不允许直接调用各 AI 厂商域名（CORS 限制）。本项目在本地开发时通过 **Vite dev 代理**转发（界面当前开放 **豆包 / DeepSeek / OpenRouter**）：
 
 | 浏览器请求 | 实际转发到 |
 |------------|-----------|
-| `/api/openai/*`   | `https://api.openai.com/*` |
-| `/api/doubao/*`   | `https://ark.cn-beijing.volces.com/*` |
-| `/api/claude/*`   | `https://api.anthropic.com/*` |
-| `/api/deepseek/*` | `https://api.deepseek.com/*` |
+| `/api/doubao/*`      | `https://ark.cn-beijing.volces.com/*` |
+| `/api/deepseek/*`    | `https://api.deepseek.com/*` |
+| `/api/openrouter/*`  | `https://openrouter.ai/*` |
 
 > 也就是说**必须用 `npm run dev` 启动**，直接双击打开 `index.html` 或 `dist/index.html` 仍会被浏览器拒绝。
 
