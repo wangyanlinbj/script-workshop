@@ -1,4 +1,5 @@
 import { Document, Packer, Paragraph, TextRun } from 'docx';
+import { fetchGroundedSources } from './sourceLookup.js';
 
 /** 标题/简介候选项（用于点击选择，避免把文案写进 onclick 造成引号与特殊字符问题） */
 let __metaTitles = [];
@@ -704,32 +705,53 @@ async function generate() {
   }
 }
 
-async function confirmScript() {
-  if (!S.script) { showToast('还没有脚本内容'); return; }
-  const mw = document.getElementById('metaWrap');
-  mw.classList.add('show');
-  document.getElementById('titleOpts').innerHTML = '<div style="padding:12px;font-size:13px;color:var(--ink-faint)">生成中…</div>';
-  document.getElementById('descOpts').innerHTML = '<div style="padding:12px;font-size:13px;color:var(--ink-faint)">生成中…</div>';
-  mw.scrollIntoView({ behavior: 'smooth' });
+const META_SYS = '你是短视频标题与简介策划专家。只返回纯JSON，不加任何解释或代码块标记。';
+const META_ENGAGE = '风格要求：要吸引人点击，趣味性强，可用悬念、反差、提问或巧妙比喻，避免平淡说明书口吻。';
 
-  const sys = '你是视频内容运营专家。只返回纯JSON，不加任何解释或代码块标记。';
-  const prompt = `根据以下视频脚本，生成标题和简介。返回格式：{"titles":["标题1","标题2","标题3"],"descs":["简介1","简介2"]}\n标题每条12字以内，简介每条20字以内。\n\n脚本：\n${S.script.slice(0, 600)}`;
+const META_FALLBACK_TITLES = ['熬夜后大脑在偷偷补课？', '你以为在发呆，其实在记东西', '记忆为啥睡一觉就变牢了'];
+const META_FALLBACK_DESCS = ['看完这条，再也不敢随便熬夜了', '原来睡觉才是记忆的隐藏技能'];
 
+async function callMetaJson(prompt) {
   let raw = '';
-  try {
-    const onC = t => { raw += t; };
-    await callStream(prompt, sys, onC);
-    persistApiSettings();
-    const parsed = JSON.parse(raw.replace(/```json|```/g, '').trim());
-    renderMeta(parsed.titles || [], parsed.descs || []);
-  } catch {
-    renderMeta(['大脑为什么需要睡眠来记忆', '你以为在睡觉其实在学习', '记忆怎么从短期变长期'], ['睡眠才是记忆巩固的关键一步', '熬夜复习为什么效果这么差']);
+  await callStream(prompt, META_SYS, t => { raw += t; });
+  persistApiSettings();
+  return JSON.parse(raw.replace(/```json|```/g, '').trim());
+}
+
+function setMetaLoading(kind, loading) {
+  const optsId = kind === 'title' ? 'titleOpts' : 'descOpts';
+  const btnId = kind === 'title' ? 'regenTitleBtn' : 'regenDescBtn';
+  const opts = document.getElementById(optsId);
+  const btn = document.getElementById(btnId);
+  if (loading) {
+    if (opts) opts.innerHTML = '<div class="meta-loading">生成中…</div>';
+    if (btn) { btn.disabled = true; btn.textContent = '生成中…'; }
+  } else if (btn) {
+    btn.disabled = false;
+    btn.textContent = '重新生成';
   }
 }
 
-function renderMeta(titles, descs) {
+function clearMetaSelection(kind) {
+  if (kind === 'title') {
+    S.selTitle = null;
+    document.querySelectorAll('#titleOpts .meta-opt').forEach(el => el.classList.remove('selected'));
+    const exp = document.getElementById('expTitle');
+    if (exp) exp.textContent = '—';
+  } else {
+    S.selDesc = null;
+    document.querySelectorAll('#descOpts .meta-opt').forEach(el => el.classList.remove('selected'));
+    const exp = document.getElementById('expDesc');
+    if (exp) exp.textContent = '—';
+  }
+  if (!S.selTitle || !S.selDesc) document.getElementById('exportBar')?.classList.remove('show');
+}
+
+function renderMeta(titles, descs, { restoreSelection = true } = {}) {
   __metaTitles = titles;
   __metaDescs = descs;
+  const prevTitle = S.selTitle;
+  const prevDesc = S.selDesc;
   document.getElementById('titleOpts').innerHTML = titles.map((t, i) => `
     <div class="meta-opt" data-kind="title" data-idx="${i}">
       <span class="meta-opt-text">${escHtml(t)}</span><span class="meta-opt-ct">${t.length}字</span>
@@ -738,6 +760,79 @@ function renderMeta(titles, descs) {
     <div class="meta-opt" data-kind="desc" data-idx="${i}">
       <span class="meta-opt-text">${escHtml(d)}</span><span class="meta-opt-ct">${d.length}字</span>
     </div>`).join('');
+  if (!restoreSelection) return;
+  if (prevTitle) {
+    const ti = titles.indexOf(prevTitle);
+    if (ti >= 0) pickMeta('title', ti, prevTitle);
+    else clearMetaSelection('title');
+  }
+  if (prevDesc) {
+    const di = descs.indexOf(prevDesc);
+    if (di >= 0) pickMeta('desc', di, prevDesc);
+    else clearMetaSelection('desc');
+  }
+}
+
+async function regenerateMetaTitles() {
+  if (!S.script) { showToast('还没有脚本内容'); return; }
+  document.getElementById('metaWrap')?.classList.add('show');
+  setMetaLoading('title', true);
+  try {
+    const prompt = `根据以下视频脚本，生成3条短视频标题备选。返回格式：{"titles":["标题1","标题2","标题3"]}\n每条12字以内。${META_ENGAGE}\n\n脚本：\n${S.script.slice(0, 800)}`;
+    const parsed = await callMetaJson(prompt);
+    clearMetaSelection('title');
+    renderMeta(parsed.titles || META_FALLBACK_TITLES, __metaDescs.length ? __metaDescs : META_FALLBACK_DESCS, { restoreSelection: true });
+    showToast('✓ 标题已重新生成');
+  } catch (e) {
+    renderMeta(__metaTitles.length ? __metaTitles : META_FALLBACK_TITLES, __metaDescs, { restoreSelection: true });
+    showToast('❌ ' + e.message);
+  } finally {
+    setMetaLoading('title', false);
+  }
+}
+
+async function regenerateMetaDescs() {
+  if (!S.script) { showToast('还没有脚本内容'); return; }
+  document.getElementById('metaWrap')?.classList.add('show');
+  setMetaLoading('desc', true);
+  try {
+    const prompt = `根据以下视频脚本，生成2条短视频简介备选。返回格式：{"descs":["简介1","简介2"]}\n每条20字以内。${META_ENGAGE}\n\n脚本：\n${S.script.slice(0, 800)}`;
+    const parsed = await callMetaJson(prompt);
+    clearMetaSelection('desc');
+    renderMeta(__metaTitles.length ? __metaTitles : META_FALLBACK_TITLES, parsed.descs || META_FALLBACK_DESCS, { restoreSelection: true });
+    showToast('✓ 简介已重新生成');
+  } catch (e) {
+    renderMeta(__metaTitles, __metaDescs.length ? __metaDescs : META_FALLBACK_DESCS, { restoreSelection: true });
+    showToast('❌ ' + e.message);
+  } finally {
+    setMetaLoading('desc', false);
+  }
+}
+
+async function confirmScript() {
+  if (!S.script) { showToast('还没有脚本内容'); return; }
+  const mw = document.getElementById('metaWrap');
+  mw.classList.add('show');
+  S.selTitle = null;
+  S.selDesc = null;
+  document.getElementById('exportBar')?.classList.remove('show');
+  setMetaLoading('title', true);
+  setMetaLoading('desc', true);
+  mw.scrollIntoView({ behavior: 'smooth' });
+
+  const prompt = `根据以下视频脚本，生成标题和简介备选。返回格式：{"titles":["标题1","标题2","标题3"],"descs":["简介1","简介2"]}\n标题每条12字以内，简介每条20字以内。${META_ENGAGE}\n\n脚本：\n${S.script.slice(0, 800)}`;
+
+  try {
+    const parsed = await callMetaJson(prompt);
+    renderMeta(parsed.titles || META_FALLBACK_TITLES, parsed.descs || META_FALLBACK_DESCS, { restoreSelection: false });
+    showToast('✓ 标题与简介已生成');
+  } catch {
+    renderMeta(META_FALLBACK_TITLES, META_FALLBACK_DESCS, { restoreSelection: false });
+    showToast('生成失败，已显示示例备选');
+  } finally {
+    setMetaLoading('title', false);
+    setMetaLoading('desc', false);
+  }
 }
 
 function pickMeta(type, idx, val) {
@@ -1110,42 +1205,26 @@ async function requestSources() {
   const btn = document.getElementById('sourceReqBtn');
   if (btn) { btn.disabled = true; btn.textContent = '检索中…'; }
 
-  const sys = `你是科学传播与事实核查助手。针对视频脚本中的选中句子，列出用户可直接点开核实的参考文献。
-
-硬性规则（必须遵守）：
-1. 每条信源必须包含一个可访问的完整 URL（以 https:// 开头），用 Markdown 链接格式输出：[来源标题](https://...)
-2. 优先顺序：政府机构/学会官网、大学院系页面、PubMed/DOI 链接、百科/教材的正式在线页面、Google Books 或豆瓣读书等图书条目页、权威媒体的原文链接
-3. 禁止输出没有链接的条目；禁止只写「某教材」「某论文」而不给 URL
-4. 禁止编造、猜测或拼接不存在的网址；不确定该 URL 是否真实存在时，不要写这条，改为写「需人工检索」并给出 1～2 个可在 Google Scholar / 知网 / 机构官网使用的检索关键词
-5. 拆解句子中的 1～3 个知识点，每点 1～2 条带链接信源，总计约 3～6 条有效链接
-6. 每条除链接外，用一句话说明：该链接如何支撑原句中的哪一论断
-
-输出结构示例：
-### 知识点 1：……
-- [WHO：……](https://www.who.int/...) — 说明……
-- [Nature 新闻：……](https://www.nature.com/...) — 说明……`;
-
-  const prompt = `【完整脚本（语境参考，节选）】\n${S.script.slice(0, 2500)}\n\n【待查证句子】\n${sentence}\n\n请列出与上述句子相关的可点击参考文献。每条必须是带 https 链接的 Markdown 格式，确保用户复制链接即可在浏览器中打开核实。`;
-
-  let raw = '';
-  renderCitationsPanel('');
+  renderCitationsPanel('正在启动真实数据库检索…\n');
   try {
-    await callStream(prompt, sys, t => {
-      raw += t;
-      renderCitationsPanel(raw);
+    const { content } = await fetchGroundedSources({
+      sentence,
+      script: S.script,
+      onProgress: msg => renderCitationsPanel(msg),
+      callStream,
     });
     persistApiSettings();
     const entry = {
       id: 'src_' + Date.now(),
       sentence,
-      content: raw.trim(),
+      content,
       createdAt: new Date().toLocaleString('zh-CN'),
     };
     S.sourceEntries.unshift(entry);
     S.activeSourceId = entry.id;
     persistSourceEntries();
     renderCitationsPanel();
-    showToast('✓ 信源已写入参考文献');
+    showToast('✓ 已检索真实文献链接');
   } catch (e) {
     renderCitationsError(e.message);
     showToast('❌ ' + e.message);
@@ -1154,7 +1233,6 @@ async function requestSources() {
     updateSourceReqBtn();
   }
 }
-
 
 // ═══════════════════════════════════════════
 // Settings
@@ -1233,6 +1311,8 @@ Object.assign(window, {
   updateCC,
   copyScript,
   confirmScript,
+  regenerateMetaTitles,
+  regenerateMetaDescs,
   closeChat,
   sendParaChat,
   requestSources,

@@ -72,6 +72,21 @@ export default defineConfig(({ mode }) => {
           target: 'https://openrouter.ai',
           rewrite: (p) => p.replace(/^\/api\/openrouter/, ''),
         },
+        '/api/openalex': {
+          ...base,
+          target: 'https://api.openalex.org',
+          rewrite: (p) => p.replace(/^\/api\/openalex/, ''),
+        },
+        '/api/crossref': {
+          ...base,
+          target: 'https://api.crossref.org',
+          rewrite: (p) => p.replace(/^\/api\/crossref/, ''),
+        },
+        '/api/wiki-zh': {
+          ...base,
+          target: 'https://zh.wikipedia.org',
+          rewrite: (p) => p.replace(/^\/api\/wiki-zh/, ''),
+        },
       },
     },
     build: {
