@@ -265,10 +265,17 @@ header {
 .field-hint a { color: var(--accent); text-decoration: none; }
 .field-hint a:hover { text-decoration: underline; }
 .divider { height: 1px; background: var(--border); margin: 20px 0; }
-.modal-actions { display: flex; gap: 10px; justify-content: flex-end; margin-top: 20px; }
+.modal-actions { display: flex; gap: 10px; justify-content: flex-end; margin-top: 20px; flex-wrap: wrap; }
+.api-test-status { min-height: 0; margin: 16px 0 0; font-size: 13px; line-height: 1.6; border-radius: 8px; padding: 0 12px; transition: all 0.2s; }
+.api-test-status:empty { display: none; margin: 0; padding: 0; }
+.api-test-status.is-info { background: var(--paper-warm); color: var(--ink-soft); padding: 10px 12px; }
+.api-test-status.is-ok { background: rgba(46,125,50,0.12); color: #2e7d32; padding: 10px 12px; }
+.api-test-status.is-err { background: rgba(192,57,43,0.1); color: var(--accent); padding: 10px 12px; white-space: pre-wrap; }
 .btn-c { padding: 8px 18px; border-radius: 6px; font-size: 13px; font-family: 'Noto Sans SC', sans-serif; cursor: pointer; transition: all 0.2s; }
 .btn-cancel { background: white; color: var(--ink-soft); border: 1px solid var(--border); }
 .btn-cancel:hover { border-color: var(--ink); color: var(--ink); }
+.btn-secondary { background: var(--paper-warm); color: var(--ink-soft); border: 1px solid var(--border); }
+.btn-secondary:hover { border-color: var(--accent); color: var(--accent); }
 .btn-ok { background: var(--ink); color: var(--paper); border: none; }
 .btn-ok:hover { background: var(--accent); }
 
@@ -278,7 +285,7 @@ header {
 .key-badge { display: inline-flex; align-items: center; justify-content: center; width: 22px; height: 22px; border-radius: 5px; color: white; font-size: 10px; font-weight: 700; flex-shrink: 0; }
 
 /* Toast */
-.toast { position: fixed; bottom: 22px; left: 50%; transform: translateX(-50%); background: var(--ink); color: var(--paper); padding: 9px 20px; border-radius: 20px; font-size: 13px; z-index: 999; opacity: 0; transition: opacity 0.3s; pointer-events: none; white-space: nowrap; }
+.toast { position: fixed; bottom: 22px; left: 50%; transform: translateX(-50%); background: var(--ink); color: var(--paper); padding: 9px 20px; border-radius: 20px; font-size: 13px; z-index: 999; opacity: 0; transition: opacity 0.3s; pointer-events: none; max-width: min(92vw, 520px); white-space: normal; text-align: center; line-height: 1.5; }
 .toast.show { opacity: 1; }
 
 /* Ref Toggle */

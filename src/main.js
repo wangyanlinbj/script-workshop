@@ -52,7 +52,7 @@ const S = {
 };
 
 /**
- * provider 接口配置（仅保留豆包 / DeepSeek）：
+ * provider 接口配置：
  * - endpoint 走 Vite dev 代理（见 vite.config.js）以绕开浏览器 CORS 限制。
  * - 具体调用哪个模型，由 API Key 弹窗里的「模型 ID」决定（modelKey 对应 localStorage 的字段）。
  * - 生产环境需要由托管层提供 /api/<provider>/* 的反向代理；否则只能改回厂商真实域名。
@@ -71,6 +71,15 @@ const PROVIDER_CFG = {
     modelKey: 'deepseekModelId',
     format: 'openai',
     name: 'DeepSeek',
+  },
+  openai: {
+    endpoint: '/api/openai/v1',
+    relayEndpoint: '/api/openai-relay',
+    baseUrlKey: 'openaiBaseUrl',
+    keyId: 'openaiKey',
+    modelKey: 'openaiModelId',
+    format: 'openai',
+    name: 'ChatGPT',
   },
   openrouter: {
     endpoint: '/api/openrouter/api/v1',
@@ -97,6 +106,7 @@ function lss(k, v) { try { localStorage.setItem(k, v); } catch {} }
 const KEY_FIELDS = [
   'doubaoKey', 'doubaoModelId',
   'deepseekKey', 'deepseekModelId',
+  'openaiKey', 'openaiModelId', 'openaiBaseUrl',
   'openrouterKey', 'openrouterModelId',
 ];
 
@@ -135,6 +145,15 @@ function bindApiSettingsPersistence() {
     });
     el.addEventListener('change', () => persistApiSettings());
   });
+  const testBtn = document.getElementById('apiTestBtn');
+  if (testBtn && !testBtn.dataset.bound) {
+    testBtn.dataset.bound = '1';
+    testBtn.addEventListener('click', e => {
+      e.preventDefault();
+      e.stopPropagation();
+      testCurrentProvider();
+    });
+  }
 }
 
 function init() {
@@ -565,7 +584,8 @@ async function _safeFetch(url, init) {
   try {
     return await fetch(url, init);
   } catch (err) {
-    throw new Error(`网络请求失败：${err?.message || err}（若你看到 "Load failed"，多半是浏览器 CORS 拦截或代理未启动；请确认是用 npm run dev 启动）`);
+    const detail = [err?.name, err?.message].filter(Boolean).join(': ') || String(err);
+    throw new Error(`网络请求失败：${detail}（若使用公司中转，请核对 API 地址并重启 npm run dev）`);
   }
 }
 
@@ -590,30 +610,179 @@ async function _callAnthropicStream(endpoint, key, system, messages, onChunk) {
   }
 }
 
+/** 根据 HTTP 状态与文案，给出可操作的排查提示（尤其 OpenAI / 代理） */
+function enrichApiError(message, provider = currentProvider()) {
+  const msg = String(message || '未知错误');
+  const cfg = PROVIDER_CFG[provider];
+  const name = cfg?.name || provider;
+
+  if (provider !== 'openai' && fieldValue('openaiKey') && !fieldValue(cfg?.keyId || '')) {
+    return `当前 AI 引擎是「${name}」，但未配置其 API Key。你已填写 ChatGPT 的 Key 时，请先在右上角 AI 引擎切换为 ChatGPT。`;
+  }
+
+  if (/ENOTFOUND|Upstream proxy error|502|503|504|网络请求失败|Load failed|Type error|TypeError|Failed to fetch|fetch failed/i.test(msg)) {
+    if (provider === 'openai' && fieldValue('openaiBaseUrl')) {
+      const base = fieldValue('openaiBaseUrl');
+      return `${msg}\n\n【公司中转网络排查】请求将发往：${base}\n1. 地址须以 https:// 开头，完整复制（含 /v1），前后不要有空格\n2. 若是公司内网域名，请先连公司 VPN 再测试\n3. 必须 Ctrl+C 停掉 dev 后重新 npm run dev（加载中转代理）\n4. 看运行 dev 的终端是否出现 [openai-relay] upstream error\n5. 若为公司自签证书，可在 web/.env.development.local 写 ALLOW_INSECURE_SSL=true 后重启 dev`;
+    }
+    if (provider === 'openai' || provider === 'openrouter') {
+      return `${msg}\n\n【ChatGPT 网络排查】走 OpenAI 官方时需本机 Node 能访问 api.openai.com：\n1. npm run dev:clash 或 HTTPS_PROXY=http://127.0.0.1:7890 npm run dev\n2. 公司中转 Key 请填写「公司中转 API 地址」，不要留空\n3. 确认用 npm run dev 打开，不是双击 html`;
+    }
+  }
+
+  if (/403|Forbidden|permission|not allowed|denied/i.test(msg)) {
+    if (provider === 'openai' && fieldValue('openaiBaseUrl')) {
+      const model = fieldValue('openaiModelId') || '（未填）';
+      return `${msg}\n\n【403 公司中转】请求已到达 ${fieldValue('openaiBaseUrl')}，但被拒绝。常见原因：\n1. 模型「${model}」不在你的 Key 权限内 → 到公司网页查可用模型名并原样填写\n2. Key 过期、无余额、或账号未开通该模型\n3. 公司要求 IP 白名单（需 IT 添加你当前出口 IP）\n4. 看运行 npm run dev 的终端里 [openai-relay] 403 后面的详细报错`;
+    }
+  }
+
+  if (/401|invalid_api_key|Incorrect API key|authentication/i.test(msg)) {
+    if (provider === 'openai' && fieldValue('openaiBaseUrl')) {
+      return `${msg}\n\n【公司中转排查】Key 已走公司中转地址。请核对：\n1. 「公司中转 API 地址」是否与网页文档一致（常含 /v1）\n2. 模型 ID 是否用公司文档里的名称\n3. Key 是否过期、是否有额度`;
+    }
+    if (provider === 'openai' && /^sk-mg/i.test(fieldValue('openaiKey') || '')) {
+      return `${msg}\n\n【公司中转 Key】检测到 sk-mg- 开头 Key，不能走 OpenAI 官方。请在 ChatGPT 配置里填写「公司中转 API 地址」。`;
+    }
+    return `${msg}\n\n【Key 排查】请检查 ${name} 的 API Key 是否完整、未过期，账户是否有余额。`;
+  }
+
+  if (/model.*(not|exist|found|invalid)|unsupported.*model|404/i.test(msg)) {
+    return `${msg}\n\n【模型排查】请检查模型 ID 拼写。ChatGPT 常用：gpt-4o、gpt-4o-mini。`;
+  }
+
+  if (/max_tokens|max_completion_tokens|unsupported_parameter/i.test(msg)) {
+    return `${msg}\n\n【参数排查】部分 OpenAI 新模型不支持 max_tokens，请换 gpt-4o / gpt-4o-mini，或联系维护同事升级接口。`;
+  }
+
+  return msg;
+}
+
+function setApiTestStatus(text, kind = '') {
+  const el = document.getElementById('apiTestStatus');
+  if (!el) return;
+  el.textContent = text || '';
+  el.className = 'api-test-status' + (kind ? ` is-${kind}` : '');
+}
+
+async function testCurrentProvider() {
+  const provider = currentProvider();
+  const cfg = PROVIDER_CFG[provider];
+  const btn = document.getElementById('apiTestBtn');
+  if (btn?.disabled) return;
+
+  persistApiSettings();
+  setApiTestStatus('', '');
+
+  try {
+    _getProviderKey();
+    resolveModelId();
+    if (provider === 'openai' && /^sk-mg/i.test(fieldValue('openaiKey') || '') && !fieldValue('openaiBaseUrl')) {
+      throw new Error('检测到公司中转 Key（sk-mg-…），请填写「公司中转 API 地址」。');
+    }
+    if (provider === 'openai' && fieldValue('openaiBaseUrl')) {
+      normalizeOpenAIBaseUrl(fieldValue('openaiBaseUrl'));
+    }
+  } catch (e) {
+    const msg = enrichApiError(e.message, provider);
+    setApiTestStatus(msg, 'err');
+    showToast('❌ ' + msg.split('\n')[0], 5000);
+    return;
+  }
+
+  if (btn) { btn.disabled = true; btn.textContent = '测试中…'; }
+  setApiTestStatus(`正在测试「${cfg.name}」连接，请稍候…`, 'info');
+  showToast(`正在测试 ${cfg.name}…`, 4000);
+
+  try {
+    let got = false;
+    await callStream('只回复一个字：好', '你只输出一个字，不要解释。', t => { got = got || !!t; });
+    persistApiSettings();
+    const okMsg = got ? `✓ ${cfg.name} 连接成功，可以正常生成脚本。` : `✓ ${cfg.name} 已响应（返回内容为空，可再试一次）。`;
+    setApiTestStatus(okMsg, 'ok');
+    showToast(got ? `✓ ${cfg.name} 连接成功` : `✓ ${cfg.name} 已响应`, 4000);
+  } catch (e) {
+    const msg = enrichApiError(e.message, provider);
+    setApiTestStatus(msg, 'err');
+    showToast('❌ ' + msg.split('\n')[0], 6000);
+  } finally {
+    if (btn) { btn.disabled = false; btn.textContent = '测试当前引擎'; }
+  }
+}
+
 async function _callOpenAIStream(cfg, key, system, messages, onChunk) {
   const allMsgs = system ? [{ role: 'system', content: system }, ...messages] : messages;
+  const { endpoint, relayBase } = cfg.keyId === 'openaiKey'
+    ? resolveOpenAIEndpoint(cfg)
+    : { endpoint: cfg.endpoint, relayBase: '' };
   const headers = {
     'Content-Type': 'application/json',
     'Authorization': `Bearer ${key}`,
+    ...(relayBase ? { 'X-OpenAI-Base': relayBase } : {}),
     ...(cfg.extraHeaders || {}),
   };
-  const res = await _safeFetch(`${cfg.endpoint}/chat/completions`, {
-    method: 'POST',
-    headers,
-    body: JSON.stringify({ model: resolveModelId(), max_tokens: 1500, stream: true, messages: allMsgs }),
-  });
-  if (!res.ok) throw new Error(await _readApiErrorMessage(res));
-  const reader = res.body.getReader(); const dec = new TextDecoder(); let buf = '';
-  while (true) {
-    const { done, value } = await reader.read(); if (done) break;
-    buf += dec.decode(value, { stream: true });
-    const lines = buf.split('\n'); buf = lines.pop();
-    for (const ln of lines) {
-      if (!ln.startsWith('data: ')) continue;
-      const d = ln.slice(6).trim(); if (d === '[DONE]') return;
-      try { const ev = JSON.parse(d); const t = ev.choices?.[0]?.delta?.content || ''; if (t) onChunk(t); } catch {}
+  const model = resolveModelId();
+  const bodyBase = { model, stream: true, messages: allMsgs };
+  const tryBodies = [
+    { ...bodyBase, max_tokens: 1500 },
+    { ...bodyBase, max_completion_tokens: 1500 },
+  ];
+
+  let lastErr = '';
+  for (const body of tryBodies) {
+    const res = await _safeFetch(`${endpoint}/chat/completions`, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify(body),
+    });
+    if (!res.ok) {
+      lastErr = await _readApiErrorMessage(res);
+      if (/max_tokens|max_completion_tokens|unsupported_parameter/i.test(lastErr) && body === tryBodies[0]) {
+        continue;
+      }
+      throw new Error(enrichApiError(lastErr));
     }
+    const reader = res.body.getReader(); const dec = new TextDecoder(); let buf = '';
+    while (true) {
+      const { done, value } = await reader.read(); if (done) break;
+      buf += dec.decode(value, { stream: true });
+      const lines = buf.split('\n'); buf = lines.pop();
+      for (const ln of lines) {
+        if (!ln.startsWith('data: ')) continue;
+        const d = ln.slice(6).trim(); if (d === '[DONE]') return;
+        try { const ev = JSON.parse(d); const t = ev.choices?.[0]?.delta?.content || ''; if (t) onChunk(t); } catch {}
+      }
+    }
+    return;
   }
+  throw new Error(enrichApiError(lastErr || 'OpenAI 请求失败'));
+}
+
+/** OpenAI 官方 vs 公司中转：填了 Base URL 则走 /api/openai-relay */
+function normalizeOpenAIBaseUrl(raw) {
+  let s = String(raw || '').trim();
+  if (!s) return '';
+  if (!/^https?:\/\//i.test(s)) s = `https://${s}`;
+  s = s.replace(/\/+$/, '');
+  try {
+    const u = new URL(s);
+    if (!u.hostname) throw new Error('invalid');
+    let path = u.pathname.replace(/\/+$/, '') || '';
+    path = path.replace(/\/chat\/completions$/i, '');
+    // 只填域名时（如 https://model.zhenguanyu.com）自动补 /v1
+    if (!path || path === '/') path = '/v1';
+    return `${u.protocol}//${u.host}${path}`;
+  } catch {
+    throw new Error('公司中转 API 地址格式不正确，请填写如 https://域名/v1');
+  }
+}
+
+function resolveOpenAIEndpoint(cfg) {
+  const customBase = normalizeOpenAIBaseUrl(fieldValue(cfg.baseUrlKey || 'openaiBaseUrl'));
+  if (customBase) {
+    return { endpoint: cfg.relayEndpoint || '/api/openai-relay', relayBase: customBase };
+  }
+  return { endpoint: cfg.endpoint, relayBase: '' };
 }
 
 function resolveModelId() {
@@ -629,7 +798,12 @@ function _getProviderKey() {
   const provider = currentProvider();
   const cfg = PROVIDER_CFG[provider];
   const key = fieldValue(cfg.keyId);
-  if (!key) throw new Error(`请先在 ⚙ API Key 弹窗里填写 ${cfg.name} 的 API Key`);
+  if (!key) {
+    if (provider !== 'openai' && fieldValue('openaiKey')) {
+      throw new Error(`你已填写 ChatGPT 的 API Key，但当前 AI 引擎是「${cfg.name}」。请在右上角切换为 ChatGPT 后再试。`);
+    }
+    throw new Error(`请先在 ⚙ API Key 弹窗里填写 ${cfg.name} 的 API Key，并确认右上角 AI 引擎已选 ${cfg.name}`);
+  }
   return { cfg, key };
 }
 
@@ -685,12 +859,13 @@ async function generate() {
     persistApiSettings();
     showToast('✓ 脚本生成完成');
   } catch (e) {
+    const errMsg = enrichApiError(e.message);
     body.style.whiteSpace = '';
     body.innerHTML = `<div style="padding:16px 8px;color:var(--accent);font-size:13px;line-height:1.9">
-      <strong>生成失败</strong><br>${escHtml(e.message)}
+      <strong>生成失败</strong><br>${escHtml(errMsg).replace(/\n/g, '<br>')}
     </div>`;
     document.getElementById('wordCt').textContent = '0';
-    showToast('❌ ' + e.message);
+    showToast('❌ ' + errMsg.split('\n')[0]);
   } finally {
     body.classList.remove('streaming');
     btn.disabled = false;
@@ -1285,15 +1460,22 @@ function escHtml(s) { return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;'
 
 function openModal(id) { document.getElementById(id).classList.add('show'); }
 function closeModal(id) { document.getElementById(id).classList.remove('show'); }
-function openApiKeyModal() { openModal('apiKeyModal'); }
+function openApiKeyModal() {
+  setApiTestStatus('', '');
+  openModal('apiKeyModal');
+}
 
 document.querySelectorAll('.modal-bg').forEach(bg => bg.addEventListener('click', e => { if (e.target === bg) bg.classList.remove('show'); }));
 document.addEventListener('keydown', e => { if (e.key === 'Escape') document.querySelectorAll('.modal-bg.show').forEach(m => m.classList.remove('show')); });
 
 let toastT;
-function showToast(msg) {
-  const t = document.getElementById('toast'); t.textContent = msg; t.classList.add('show');
-  clearTimeout(toastT); toastT = setTimeout(() => t.classList.remove('show'), 2800);
+function showToast(msg, durationMs = 2800) {
+  const t = document.getElementById('toast');
+  if (!t) return;
+  t.textContent = msg;
+  t.classList.add('show');
+  clearTimeout(toastT);
+  toastT = setTimeout(() => t.classList.remove('show'), durationMs);
 }
 
 init();
@@ -1303,6 +1485,7 @@ Object.assign(window, {
   handleFolderUpload,
   switchProvider,
   openApiKeyModal,
+  testCurrentProvider,
   generate,
   toggleRefMode,
   toggleCreatorIdentity,

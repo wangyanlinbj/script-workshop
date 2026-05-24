@@ -1,5 +1,116 @@
 import { defineConfig, loadEnv } from 'vite';
 import { HttpsProxyAgent } from 'https-proxy-agent';
+import http from 'node:http';
+import https from 'node:https';
+import { URL } from 'node:url';
+
+/** 公司 OpenAI 中转：浏览器 → /api/openai-relay → 请求头 X-OpenAI-Base 指定的地址 */
+function readRequestBody(req) {
+  return new Promise((resolve, reject) => {
+    const chunks = [];
+    req.on('data', chunk => chunks.push(chunk));
+    req.on('end', () => resolve(Buffer.concat(chunks)));
+    req.on('error', reject);
+  });
+}
+
+function companyOpenaiRelayPlugin(upstreamAgent, allowInsecureSsl = false) {
+  return {
+    name: 'company-openai-relay',
+    configureServer(server) {
+      server.middlewares.use((req, res, next) => {
+        if (!req.url?.startsWith('/api/openai-relay')) return next();
+
+        (async () => {
+          const baseHeader = req.headers['x-openai-base'];
+          if (!baseHeader || typeof baseHeader !== 'string') {
+            res.statusCode = 400;
+            res.setHeader('Content-Type', 'text/plain; charset=utf-8');
+            res.end('缺少 X-OpenAI-Base：请在 API Key 弹窗填写「公司中转 API 地址」');
+            return;
+          }
+
+          let upstreamBase;
+          try {
+            upstreamBase = new URL(baseHeader.endsWith('/') ? baseHeader : `${baseHeader}/`);
+          } catch {
+            res.statusCode = 400;
+            res.setHeader('Content-Type', 'text/plain; charset=utf-8');
+            res.end('公司中转 API 地址格式不正确，应为 https://域名/.../v1');
+            return;
+          }
+
+          const subPath = req.url.replace(/^\/api\/openai-relay\/?/, '') || 'chat/completions';
+          let targetUrl;
+          try {
+            targetUrl = new URL(subPath, upstreamBase);
+          } catch {
+            res.statusCode = 400;
+            res.end('无法拼接中转请求地址');
+            return;
+          }
+
+          const body = await readRequestBody(req);
+          const isHttps = targetUrl.protocol === 'https:';
+          const lib = isHttps ? https : http;
+
+          // 只转发必要头；去掉 Origin/Referer 等，避免公司网关/WAF 对 localhost 返回 403
+          const headers = {
+            host: targetUrl.host,
+            'content-type': req.headers['content-type'] || 'application/json',
+            accept: req.headers.accept || 'application/json',
+            authorization: req.headers.authorization || '',
+            'user-agent': 'script-workshop/1.0',
+          };
+          if (body.length) headers['content-length'] = String(body.length);
+          if (!headers.authorization) delete headers.authorization;
+
+          const options = {
+            method: req.method || 'POST',
+            hostname: targetUrl.hostname,
+            port: targetUrl.port || (isHttps ? 443 : 80),
+            path: `${targetUrl.pathname}${targetUrl.search}`,
+            headers,
+            ...(isHttps && upstreamAgent ? { agent: upstreamAgent } : {}),
+            ...(isHttps && allowInsecureSsl ? { rejectUnauthorized: false } : {}),
+          };
+
+          await new Promise((resolve, reject) => {
+            const proxyReq = lib.request(options, (proxyRes) => {
+              const status = proxyRes.statusCode || 502;
+              if (status >= 400) {
+                const chunks = [];
+                proxyRes.on('data', c => chunks.push(c));
+                proxyRes.on('end', () => {
+                  const text = Buffer.concat(chunks).toString();
+                  console.warn('[openai-relay]', status, targetUrl.href, text.slice(0, 800));
+                  res.writeHead(status, { 'content-type': proxyRes.headers['content-type'] || 'application/json' });
+                  res.end(text);
+                  resolve();
+                });
+                return;
+              }
+              res.writeHead(status, proxyRes.headers);
+              proxyRes.pipe(res);
+              proxyRes.on('end', resolve);
+            });
+            proxyReq.on('error', (err) => {
+              console.warn('[openai-relay] upstream error:', targetUrl.origin, err?.message || err);
+              reject(err);
+            });
+            proxyReq.end(body);
+          });
+        })().catch((err) => {
+          if (!res.headersSent) {
+            res.statusCode = 502;
+            res.setHeader('Content-Type', 'text/plain; charset=utf-8');
+          }
+          res.end(`Upstream proxy error: ${err?.message || err}`);
+        });
+      });
+    },
+  };
+}
 
 /**
  * 开发代理：浏览器 → localhost:5173/api/<provider>/... → 厂商 API
@@ -41,8 +152,11 @@ export default defineConfig(({ mode }) => {
     ...(upstreamAgent ? { agent: upstreamAgent } : {}),
   };
 
+  const allowInsecureSsl = env.ALLOW_INSECURE_SSL === 'true';
+
   return {
     base: '/',
+    plugins: [companyOpenaiRelayPlugin(upstreamAgent, allowInsecureSsl)],
     server: {
       port: 5173,
       open: true,

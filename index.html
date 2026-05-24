@@ -21,6 +21,7 @@
     <select class="model-select" id="providerSelect" onchange="switchProvider(this.value)">
       <option value="doubao">豆包</option>
       <option value="deepseek">DeepSeek</option>
+      <option value="openai">ChatGPT</option>
       <option value="openrouter">OpenRouter</option>
     </select>
     <button type="button" class="hdr-btn" onclick="openApiKeyModal()">⚙ API Key</button>
@@ -234,6 +235,33 @@
 
     <div class="divider"></div>
 
+    <!-- OpenAI / ChatGPT -->
+    <div class="key-section">
+      <div class="key-section-head">
+        <span class="key-badge" style="background:#10a37f">GPT</span>
+        ChatGPT（OpenAI）
+      </div>
+      <div class="field">
+        <label class="field-label">API Key</label>
+        <input class="field-input mono" id="openaiKey" type="password" placeholder="sk-…" autocomplete="off">
+        <div class="field-hint">OpenAI 官方 Key 在 <a href="https://platform.openai.com/api-keys" target="_blank" rel="noopener noreferrer">platform.openai.com</a> 获取；<strong>公司中转 Key</strong>（如 sk-mg-…）请同时填写下方「公司中转 API 地址」。</div>
+      </div>
+      <div class="field">
+        <label class="field-label">公司中转 API 地址（选填）</label>
+        <input class="field-input mono" id="openaiBaseUrl" placeholder="https://model.zhenguanyu.com" autocomplete="off">
+        <div class="field-hint">从公司网页复制 Base URL。只填域名即可（如 <code style="background:var(--paper-warm);padding:1px 4px;border-radius:3px">https://model.zhenguanyu.com</code>），工具会自动补 <code style="background:var(--paper-warm);padding:1px 4px;border-radius:3px">/v1</code>。</div>
+      </div>
+      <div class="field" style="margin-bottom:0">
+        <label class="field-label">模型 ID</label>
+        <input class="field-input mono" id="openaiModelId" placeholder="例如 gpt-4o 或 gpt-4o-mini" autocomplete="off">
+        <div class="field-hint">
+          OpenAI 官方常用 <code style="background:var(--paper-warm);padding:1px 4px;border-radius:3px">gpt-4o</code>、<code style="background:var(--paper-warm);padding:1px 4px;border-radius:3px">gpt-4o-mini</code>；<strong>公司中转</strong>请按网页文档填写模型名。
+        </div>
+      </div>
+    </div>
+
+    <div class="divider"></div>
+
     <!-- OpenRouter -->
     <div class="key-section">
       <div class="key-section-head">
@@ -254,8 +282,11 @@
       </div>
     </div>
 
+    <div class="api-test-status" id="apiTestStatus" role="status" aria-live="polite"></div>
+
     <div class="modal-actions">
       <button type="button" class="btn-c btn-cancel" onclick="closeModal('apiKeyModal')">取消</button>
+      <button type="button" class="btn-c btn-secondary" id="apiTestBtn">测试当前引擎</button>
       <button type="button" class="btn-c btn-ok" onclick="saveApiKeys()">保存</button>
     </div>
   </div>
