@@ -30,39 +30,36 @@
 
 <!-- App Body -->
 <div class="app">
-  <!-- Sidebar -->
-  <div class="sidebar">
+  <!-- 选题侧栏（左列） -->
+  <aside class="sidebar">
     <div class="side-head">
-      <span class="side-label">栏目 & 参考文稿</span>
-      <button type="button" class="upload-btn" onclick="openFolderUpload()" title="上传含有 Word 文档的文件夹">+ 上传文件夹</button>
+      <span class="side-label">选题</span>
     </div>
-    <input type="file" id="folderInput" webkitdirectory style="display:none" onchange="handleFolderUpload(event)">
-    <div class="upload-progress" id="uploadProgress">
-      <div class="progress-dot"></div>
-      <span id="uploadProgressTxt">解析文档中…</span>
-    </div>
-    <div class="col-list" id="colList"></div>
-    <div class="preview-panel" id="prevPanel">
-      <div class="prev-head">
-        <span id="prevTitle">文稿预览</span>
-        <button type="button" class="prev-close" onclick="closePrev()">✕</button>
-      </div>
-      <div class="prev-body" id="prevBody"></div>
-    </div>
-  </div>
+    <div class="topic-list" id="topicPanel"></div>
+  </aside>
 
   <!-- Editor -->
   <div class="editor">
     <div class="ed-toolbar" id="edToolbar">
-      <span style="font-size:12px;color:var(--ink-faint)">← 选择栏目开始创作</span>
+      <div class="col-ref-bar">
+        <span class="col-ref-label">栏目 &amp; 参考文献</span>
+        <button type="button" class="upload-btn col-upload-btn" onclick="openFolderUpload()" title="上传含有 Word 文档的文件夹">+ 上传文件夹</button>
+        <div class="col-tabs" id="colTabs"></div>
+      </div>
+      <div class="upload-progress" id="uploadProgress">
+        <div class="progress-dot"></div>
+        <span id="uploadProgressTxt">解析文档中…</span>
+      </div>
     </div>
+    <input type="file" id="folderInput" webkitdirectory style="display:none" onchange="handleFolderUpload(event)">
     <div class="ed-body" id="edBody">
       <div class="empty-state" id="emptyState">
         <div class="empty-icon">📝</div>
         <div class="empty-title">选择栏目开始创作</div>
-        <div class="empty-desc">点击左侧「+ 上传文件夹」添加栏目<br>然后选择栏目，输入大纲生成脚本</div>
+        <div class="empty-desc">点击上方「+ 上传文件夹」添加栏目<br>选择栏目标签后开始创作</div>
       </div>
       <div id="edActive" style="display:none;flex-direction:column;gap:22px;">
+        <div class="script-module" id="scriptModule">
         <div class="identity-block" id="identityBlock">
           <button type="button" class="identity-head" id="identityToggle" onclick="toggleCreatorIdentity()" aria-expanded="true">
             <span class="identity-title">创作者身份</span>
@@ -108,8 +105,8 @@
                 <button type="button" class="act-btn primary" onclick="confirmScript()">✓ 确认稿件</button>
               </div>
             </div>
-            <div class="sc-body" id="scriptBody" style="padding:12px 16px"></div>
-            <div class="para-hint" id="paraHint" style="display:none">↑ 拖选句子后可修改脚本，或点击「信源请求」在右侧查阅参考文献</div>
+            <div class="sc-body" id="scriptBody" style="padding:12px 16px" spellcheck="false"></div>
+            <div class="para-hint" id="paraHint" style="display:none">可直接在上方编辑逐字稿（打字、删除、复制、粘贴）；拖选句子后可 AI 修改或「信源请求」</div>
             <div class="sc-foot">字数：<strong id="wordCt">0</strong> 字</div>
           </div>
           <!-- 段落对话修改卡 -->
@@ -149,7 +146,7 @@
               <div class="mc-head-row">
                 <div class="mc-head-text">
                   <div class="mc-head-title">简介备选</div>
-                  <div class="mc-head-hint">20字以内 · 吸引人点击、趣味性强</div>
+                  <div class="mc-head-hint">15～20字 · 尽量写满 · 吸引人点击</div>
                 </div>
                 <button type="button" class="mc-regen-btn" id="regenDescBtn" onclick="regenerateMetaDescs()">重新生成</button>
               </div>
@@ -157,6 +154,9 @@
             </div>
           </div>
         </div>
+        </div>
+
+        <div id="storyboardModule" class="storyboard-module"></div>
       </div>
     </div>
     <div class="export-bar" id="exportBar">
@@ -171,17 +171,29 @@
       </div>
     </div>
   </div>
+  <!-- 右栏：必须与 .editor 同级，不可放入 .editor 内 -->
 
-  <div class="citations-panel" id="citationsPanel">
-    <div class="cit-head"><span class="cit-label">参考文献</span></div>
-    <div class="cit-body" id="citBody">
-      <div class="cit-empty" id="citEmpty">
-        <div class="cit-empty-icon">📚</div>
-        <div>生成脚本草稿后，拖选句子并点击「信源请求」：从 OpenAlex / Crossref / 维基百科 检索真实链接（非模型编造）</div>
+  <aside class="right-rail citations-panel" id="citationsPanel">
+    <section class="right-pane right-pane-cit cit-section">
+      <div class="right-pane-head"><span class="cit-label">参考文献</span></div>
+      <div class="right-pane-body cit-body" id="citBody">
+        <div class="cit-empty" id="citEmpty">
+          <div class="cit-empty-icon">📚</div>
+          <div>生成脚本草稿后，拖选句子并点击「信源请求」：从 OpenAlex / Crossref / 维基百科 检索真实链接（非模型编造）</div>
+        </div>
+        <div class="cit-list" id="citList" hidden></div>
       </div>
-      <div class="cit-list" id="citList" hidden></div>
-    </div>
-  </div>
+    </section>
+    <section class="right-pane right-pane-history history-panel">
+      <div class="right-pane-head history-head">
+        <span class="history-label">历史稿件</span>
+        <span class="history-count" id="historyCount">0/10</span>
+      </div>
+      <div class="right-pane-body history-list" id="historyList">
+        <div class="history-empty">确认稿件后，最近 10 篇会保存在这里</div>
+      </div>
+    </section>
+  </aside>
 </div>
 
 

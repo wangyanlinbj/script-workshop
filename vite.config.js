@@ -3,6 +3,7 @@ import { HttpsProxyAgent } from 'https-proxy-agent';
 import http from 'node:http';
 import https from 'node:https';
 import { URL } from 'node:url';
+import { handleTopicSearch } from './server/topicSearchHandler.js';
 
 /** 公司 OpenAI 中转：浏览器 → /api/openai-relay → 请求头 X-OpenAI-Base 指定的地址 */
 function readRequestBody(req) {
@@ -112,6 +113,37 @@ function companyOpenaiRelayPlugin(upstreamAgent, allowInsecureSsl = false) {
   };
 }
 
+function topicSearchPlugin(upstreamAgent) {
+  return {
+    name: 'topic-search',
+    configureServer(server) {
+      server.middlewares.use((req, res, next) => {
+        if (req.method !== 'POST' || req.url !== '/api/topic-search') return next();
+
+        (async () => {
+          try {
+            const body = JSON.parse((await readRequestBody(req)).toString('utf8') || '{}');
+            const result = await handleTopicSearch(body, upstreamAgent);
+            res.statusCode = 200;
+            res.setHeader('Content-Type', 'application/json; charset=utf-8');
+            res.end(JSON.stringify(result));
+          } catch (err) {
+            res.statusCode = 400;
+            res.setHeader('Content-Type', 'text/plain; charset=utf-8');
+            res.end(err?.message || String(err));
+          }
+        })().catch((err) => {
+          if (!res.headersSent) {
+            res.statusCode = 502;
+            res.setHeader('Content-Type', 'text/plain; charset=utf-8');
+          }
+          res.end(`Topic search error: ${err?.message || err}`);
+        });
+      });
+    },
+  };
+}
+
 /**
  * 开发代理：浏览器 → localhost:5173/api/<provider>/... → 厂商 API
  *
@@ -156,7 +188,7 @@ export default defineConfig(({ mode }) => {
 
   return {
     base: '/',
-    plugins: [companyOpenaiRelayPlugin(upstreamAgent, allowInsecureSsl)],
+    plugins: [companyOpenaiRelayPlugin(upstreamAgent, allowInsecureSsl), topicSearchPlugin(upstreamAgent)],
     server: {
       port: 5173,
       open: true,

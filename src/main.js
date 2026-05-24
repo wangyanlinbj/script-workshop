@@ -1,5 +1,7 @@
 import { Document, Packer, Paragraph, TextRun } from 'docx';
 import { fetchGroundedSources } from './sourceLookup.js';
+import { initTopicPanel, renderTopicPanel } from './topicPanel.js';
+import { initStoryboardPanel, resetStoryboardPanel } from './storyboardPanel.js';
 
 /** 标题/简介候选项（用于点击选择，避免把文案写进 onclick 造成引号与特殊字符问题） */
 let __metaTitles = [];
@@ -49,6 +51,8 @@ const S = {
   useRef: true,         // whether to inject reference docs into prompt
   sourceEntries: [],    // { id, sentence, content, createdAt }
   activeSourceId: null,
+  historyDrafts: [],    // 历史稿件
+  activeHistoryId: null,
 };
 
 /**
@@ -174,8 +178,10 @@ function init() {
 
   loadExpandedCols();
   loadSourceEntries();
+  loadHistoryDrafts();
   renderColumns();
   renderCitationsPanel();
+  renderHistoryPanel();
 
   KEY_FIELDS.forEach(k => {
     const v = ls(k);
@@ -184,6 +190,14 @@ function init() {
   });
   bindApiSettingsPersistence();
   initCreatorIdentity();
+  initTopicPanel({ escHtml, showToast, callMetaJson, updateCC });
+  initStoryboardPanel({
+    escHtml,
+    showToast,
+    callMetaJson,
+    readMainScript: () => readScriptFromEditor() || S.script,
+    readDocxText: readDocxFile,
+  });
 
   const metaWrap = document.getElementById('metaWrap');
   if (metaWrap && !metaWrap.dataset.metaClickBound) {
@@ -287,6 +301,9 @@ async function handleFolderUpload(e) {
   persistExpandedCols();
 
   renderColumns();
+  const lastName = folderNames[folderNames.length - 1];
+  const imported = S.columns.find(c => c.name === lastName);
+  if (imported) selectCol(imported.id);
   showToast(`✓ 已导入 ${folderNames.length} 个栏目`);
 }
 
@@ -313,7 +330,7 @@ function guessEmoji(name) {
 }
 
 // ═══════════════════════════════════════════
-// UI: 栏目列表（含参考文稿）
+// UI: 栏目标签（顶栏）
 // ═══════════════════════════════════════════
 function loadExpandedCols() {
   S.expandedCols = new Set();
@@ -327,12 +344,26 @@ function persistExpandedCols() {
   try { lss('expandedCols', JSON.stringify([...S.expandedCols])); } catch {}
 }
 
-function toggleColExpand(e, colId) {
-  e.stopPropagation();
-  if (S.expandedCols.has(colId)) S.expandedCols.delete(colId);
-  else S.expandedCols.add(colId);
-  persistExpandedCols();
-  renderColumns();
+function renderColToolbar() {
+  const tabs = document.getElementById('colTabs');
+  if (!tabs) return;
+  if (S.columns.length === 0) {
+    tabs.innerHTML = '<span class="col-tabs-empty">上传文件夹后将在此显示栏目标签</span>';
+    return;
+  }
+  tabs.innerHTML = S.columns
+    .map((col) => {
+      const active = S.activeCol === col.id;
+      return `<div class="col-tab${active ? ' active' : ''}" data-col-id="${col.id}">
+      <button type="button" class="col-tab-main" onclick="selectCol('${col.id}')" title="${escHtml(col.name)}">
+        ${active ? '<span class="col-tab-dot"></span>' : ''}
+        <span class="col-tab-emoji">${col.emoji}</span>
+        <span class="col-tab-name">${escHtml(col.name)}</span>
+      </button>
+      <button type="button" class="col-tab-close" onclick="deleteCol(event,'${col.id}')" title="删除栏目">✕</button>
+    </div>`;
+    })
+    .join('');
 }
 
 function renderColDocsHtml(colId) {
@@ -351,34 +382,7 @@ function renderColDocsHtml(colId) {
 }
 
 function renderColumns() {
-  const list = document.getElementById('colList');
-  if (!list) return;
-  if (S.columns.length === 0) {
-    list.innerHTML = `<div style="padding:28px 12px;text-align:center;color:var(--ink-faint);font-size:13px;line-height:2">
-      <div style="font-size:28px;margin-bottom:8px">📁</div>
-      点击「+ 上传文件夹」<br>添加栏目与参考文稿
-    </div>`;
-    return;
-  }
-  list.innerHTML = S.columns.map(col => {
-    const cnt = (S.docs[col.id] || []).length;
-    const expanded = S.expandedCols.has(col.id);
-    const active = S.activeCol === col.id;
-    return `<div class="col-group${active ? ' active' : ''}">
-      <div class="col-row">
-        <button type="button" class="col-expand${expanded ? ' open' : ''}" onclick="toggleColExpand(event,'${col.id}')" title="${expanded ? '收起文稿' : '展开文稿'}" aria-expanded="${expanded}">▸</button>
-        <div class="col-main" onclick="selectCol('${col.id}')">
-          <div class="col-icon">${col.emoji}</div>
-          <div class="col-info">
-            <div class="col-name">${escHtml(col.name)}</div>
-            <div class="col-sub">${cnt > 0 ? cnt + ' 篇参考文稿' : '暂无参考文稿'}</div>
-          </div>
-        </div>
-        <button type="button" class="col-del" onclick="deleteCol(event,'${col.id}')" title="删除栏目">✕</button>
-      </div>
-      <div class="col-docs${expanded ? ' open' : ''}">${renderColDocsHtml(col.id)}</div>
-    </div>`;
-  }).join('');
+  renderColToolbar();
 }
 
 function deleteCol(e, colId) {
@@ -415,21 +419,21 @@ function selectCol(id) {
   document.getElementById('chatCard').style.display = 'none';
   document.getElementById('paraHint').style.display = 'none';
   closePrev();
+  resetStoryboardPanel();
 }
 
 function showEditorArea(col) {
   document.getElementById('emptyState').style.display = 'none';
   document.getElementById('edActive').style.display = 'flex';
-  document.getElementById('edToolbar').innerHTML = `
-    <div class="col-badge"><div class="badge-dot"></div>${col.emoji} ${escHtml(col.name)}</div>
-  `;
+  renderColToolbar();
 }
 
 function resetEditor() {
   document.getElementById('emptyState').style.display = 'flex';
   document.getElementById('edActive').style.display = 'none';
-  document.getElementById('edToolbar').innerHTML = `<span style="font-size:12px;color:var(--ink-faint)">← 选择栏目开始创作</span>`;
+  renderColToolbar();
   closePrev();
+  resetStoryboardPanel();
 }
 
 function docIcon(n) {
@@ -836,7 +840,7 @@ async function generate() {
   card.classList.add('show');
   body.innerHTML = '';
   body.style.whiteSpace = 'pre-wrap';
-  body.classList.add('streaming');
+  setScriptEditorMode('streaming');
   document.getElementById('paraHint').style.display = 'none';
   document.getElementById('chatCard').style.display = 'none';
   document.getElementById('metaWrap').classList.remove('show');
@@ -867,7 +871,7 @@ async function generate() {
     document.getElementById('wordCt').textContent = '0';
     showToast('❌ ' + errMsg.split('\n')[0]);
   } finally {
-    body.classList.remove('streaming');
+    setScriptEditorMode('editable');
     btn.disabled = false;
     document.getElementById('genBtnTxt').textContent = '✦ 生成脚本';
     body.style.whiteSpace = '';
@@ -882,9 +886,176 @@ async function generate() {
 
 const META_SYS = '你是短视频标题与简介策划专家。只返回纯JSON，不加任何解释或代码块标记。';
 const META_ENGAGE = '风格要求：要吸引人点击，趣味性强，可用悬念、反差、提问或巧妙比喻，避免平淡说明书口吻。';
+const META_TITLE_RULE = '标题每条 10～12 字（不超过 12 字），信息完整、有记忆点。';
+const META_DESC_RULE = '简介每条 15～20 字（不超过 20 字）：尽量写满到 18～20 字，补充一句利益点或悬念，禁止少于 15 字的过短句。';
 
 const META_FALLBACK_TITLES = ['熬夜后大脑在偷偷补课？', '你以为在发呆，其实在记东西', '记忆为啥睡一觉就变牢了'];
-const META_FALLBACK_DESCS = ['看完这条，再也不敢随便熬夜了', '原来睡觉才是记忆的隐藏技能'];
+const META_FALLBACK_DESCS = ['看完才懂：睡眠是把记忆写进大脑的关键', '熬夜复习白费功？记忆要靠睡眠写进脑子'];
+
+const HISTORY_MAX = 10;
+
+function loadHistoryDrafts() {
+  try {
+    const raw = ls('historyDrafts');
+    S.historyDrafts = raw ? JSON.parse(raw) : [];
+    if (!Array.isArray(S.historyDrafts)) S.historyDrafts = [];
+  } catch {
+    S.historyDrafts = [];
+  }
+}
+
+function persistHistoryDrafts() {
+  try { lss('historyDrafts', JSON.stringify(S.historyDrafts.slice(0, HISTORY_MAX))); } catch {}
+}
+
+function historyDraftLabel(item) {
+  if (item.selTitle) return item.selTitle;
+  if (item.outline) return item.outline.slice(0, 18) + (item.outline.length > 18 ? '…' : '');
+  const preview = (item.script || '').replace(/\s+/g, ' ').trim().slice(0, 16);
+  return preview ? preview + '…' : '未命名稿件';
+}
+
+function saveHistoryDraft() {
+  if (!S.script?.trim()) return;
+  const col = S.columns.find(c => c.id === S.activeCol);
+  const outline = document.getElementById('outlineInput')?.value.trim() || '';
+  const entry = {
+    id: 'hist_' + Date.now(),
+    savedAt: new Date().toLocaleString('zh-CN'),
+    colId: S.activeCol,
+    colName: col?.name || '',
+    colEmoji: col?.emoji || '📝',
+    outline,
+    script: S.script,
+    selTitle: S.selTitle || '',
+    selDesc: S.selDesc || '',
+    titles: [...__metaTitles],
+    descs: [...__metaDescs],
+  };
+  const dupIdx = S.historyDrafts.findIndex(h => h.script === entry.script && h.outline === entry.outline);
+  if (dupIdx >= 0) S.historyDrafts.splice(dupIdx, 1);
+  S.historyDrafts.unshift(entry);
+  if (S.historyDrafts.length > HISTORY_MAX) S.historyDrafts.length = HISTORY_MAX;
+  S.activeHistoryId = entry.id;
+  persistHistoryDrafts();
+  renderHistoryPanel();
+}
+
+function syncHistoryDraftMeta() {
+  if (!S.selTitle || !S.selDesc) return;
+  const item = S.historyDrafts.find(h => h.id === S.activeHistoryId)
+    || S.historyDrafts.find(h => h.script === S.script);
+  if (!item) return;
+  item.selTitle = S.selTitle;
+  item.selDesc = S.selDesc;
+  item.script = S.script;
+  persistHistoryDrafts();
+  renderHistoryPanel();
+}
+
+function renderHistoryPanel() {
+  const list = document.getElementById('historyList');
+  const count = document.getElementById('historyCount');
+  if (!list) return;
+  if (count) count.textContent = `${S.historyDrafts.length}/${HISTORY_MAX}`;
+  if (!S.historyDrafts.length) {
+    list.innerHTML = '<div class="history-empty">确认稿件后，最近 10 篇会保存在这里</div>';
+    return;
+  }
+  list.innerHTML = S.historyDrafts.map(item => {
+    const label = escHtml(historyDraftLabel(item));
+    const sub = escHtml([item.colName, item.savedAt].filter(Boolean).join(' · '));
+    const words = (item.script || '').replace(/\s/g, '').length;
+    const active = item.id === S.activeHistoryId ? ' active' : '';
+    return `<div class="history-item${active}" data-id="${item.id}">
+      <button type="button" class="history-item-main" data-action="load">
+        <div class="history-item-title">${label}</div>
+        <div class="history-item-meta">${sub} · ${words}字</div>
+      </button>
+      <button type="button" class="history-item-del" data-action="delete" title="删除">✕</button>
+    </div>`;
+  }).join('');
+  if (!list.dataset.bound) {
+    list.dataset.bound = '1';
+    list.addEventListener('click', e => {
+      const itemEl = e.target.closest('.history-item');
+      if (!itemEl) return;
+      const id = itemEl.dataset.id;
+      if (e.target.closest('[data-action="delete"]')) {
+        e.stopPropagation();
+        deleteHistoryDraft(id);
+        return;
+      }
+      loadHistoryDraft(id);
+    });
+  }
+}
+
+function loadHistoryDraft(id) {
+  const item = S.historyDrafts.find(h => h.id === id);
+  if (!item) return;
+
+  document.getElementById('emptyState').style.display = 'none';
+  document.getElementById('edActive').style.display = 'flex';
+
+  const col = item.colId ? S.columns.find(c => c.id === item.colId) : null;
+  if (col) {
+    S.activeCol = col.id;
+    S.expandedCols.add(col.id);
+    persistExpandedCols();
+    renderColumns();
+    showEditorArea(col);
+  } else {
+    showEditorArea({ name: item.colName || '历史稿件', emoji: item.colEmoji || '📝' });
+  }
+
+  document.getElementById('outlineInput').value = item.outline || '';
+  updateCC();
+  S.script = item.script || '';
+  S.selection = null;
+  S.chatHistory = [];
+  S.selTitle = item.selTitle || '';
+  S.selDesc = item.selDesc || '';
+  S.activeHistoryId = id;
+
+  document.getElementById('scriptCard').classList.add('show');
+  document.getElementById('scriptLabel').style.display = 'flex';
+  renderScriptContent();
+  document.getElementById('paraHint').style.display = S.script.trim() ? 'block' : 'none';
+  document.getElementById('chatCard').style.display = 'none';
+  updateSourceReqBtn();
+
+  document.getElementById('metaWrap').classList.add('show');
+  renderMeta(item.titles?.length ? item.titles : META_FALLBACK_TITLES, item.descs?.length ? item.descs : META_FALLBACK_DESCS, { restoreSelection: false });
+
+  if (S.selTitle) {
+    const ti = __metaTitles.indexOf(S.selTitle);
+    if (ti >= 0) document.querySelectorAll('#titleOpts .meta-opt').forEach((el, i) => el.classList.toggle('selected', i === ti));
+  }
+  if (S.selDesc) {
+    const di = __metaDescs.indexOf(S.selDesc);
+    if (di >= 0) document.querySelectorAll('#descOpts .meta-opt').forEach((el, i) => el.classList.toggle('selected', i === di));
+  }
+  if (S.selTitle && S.selDesc) {
+    document.getElementById('expTitle').textContent = S.selTitle;
+    document.getElementById('expDesc').textContent = S.selDesc;
+    document.getElementById('exportBar')?.classList.add('show');
+  } else {
+    document.getElementById('exportBar')?.classList.remove('show');
+  }
+
+  renderHistoryPanel();
+  showToast('✓ 已载入历史稿件，可继续修改');
+  document.getElementById('scriptBody')?.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+}
+
+function deleteHistoryDraft(id) {
+  S.historyDrafts = S.historyDrafts.filter(h => h.id !== id);
+  if (S.activeHistoryId === id) S.activeHistoryId = null;
+  persistHistoryDrafts();
+  renderHistoryPanel();
+  showToast('已删除历史稿件');
+}
 
 async function callMetaJson(prompt) {
   let raw = '';
@@ -953,7 +1124,7 @@ async function regenerateMetaTitles() {
   document.getElementById('metaWrap')?.classList.add('show');
   setMetaLoading('title', true);
   try {
-    const prompt = `根据以下视频脚本，生成3条短视频标题备选。返回格式：{"titles":["标题1","标题2","标题3"]}\n每条12字以内。${META_ENGAGE}\n\n脚本：\n${S.script.slice(0, 800)}`;
+    const prompt = `根据以下视频脚本，生成3条短视频标题备选。返回格式：{"titles":["标题1","标题2","标题3"]}\n${META_TITLE_RULE}\n${META_ENGAGE}\n\n脚本：\n${S.script.slice(0, 800)}`;
     const parsed = await callMetaJson(prompt);
     clearMetaSelection('title');
     renderMeta(parsed.titles || META_FALLBACK_TITLES, __metaDescs.length ? __metaDescs : META_FALLBACK_DESCS, { restoreSelection: true });
@@ -971,7 +1142,7 @@ async function regenerateMetaDescs() {
   document.getElementById('metaWrap')?.classList.add('show');
   setMetaLoading('desc', true);
   try {
-    const prompt = `根据以下视频脚本，生成2条短视频简介备选。返回格式：{"descs":["简介1","简介2"]}\n每条20字以内。${META_ENGAGE}\n\n脚本：\n${S.script.slice(0, 800)}`;
+    const prompt = `根据以下视频脚本，生成2条短视频简介备选。返回格式：{"descs":["简介1","简介2"]}\n${META_DESC_RULE}\n${META_ENGAGE}\n\n脚本：\n${S.script.slice(0, 800)}`;
     const parsed = await callMetaJson(prompt);
     clearMetaSelection('desc');
     renderMeta(__metaTitles.length ? __metaTitles : META_FALLBACK_TITLES, parsed.descs || META_FALLBACK_DESCS, { restoreSelection: true });
@@ -985,7 +1156,8 @@ async function regenerateMetaDescs() {
 }
 
 async function confirmScript() {
-  if (!S.script) { showToast('还没有脚本内容'); return; }
+  syncScriptFromEditor();
+  if (!S.script?.trim()) { showToast('还没有脚本内容'); return; }
   const mw = document.getElementById('metaWrap');
   mw.classList.add('show');
   S.selTitle = null;
@@ -995,15 +1167,17 @@ async function confirmScript() {
   setMetaLoading('desc', true);
   mw.scrollIntoView({ behavior: 'smooth' });
 
-  const prompt = `根据以下视频脚本，生成标题和简介备选。返回格式：{"titles":["标题1","标题2","标题3"],"descs":["简介1","简介2"]}\n标题每条12字以内，简介每条20字以内。${META_ENGAGE}\n\n脚本：\n${S.script.slice(0, 800)}`;
+  const prompt = `根据以下视频脚本，生成标题和简介备选。返回格式：{"titles":["标题1","标题2","标题3"],"descs":["简介1","简介2"]}\n${META_TITLE_RULE}\n${META_DESC_RULE}\n${META_ENGAGE}\n\n脚本：\n${S.script.slice(0, 800)}`;
 
   try {
     const parsed = await callMetaJson(prompt);
     renderMeta(parsed.titles || META_FALLBACK_TITLES, parsed.descs || META_FALLBACK_DESCS, { restoreSelection: false });
-    showToast('✓ 标题与简介已生成');
+    saveHistoryDraft();
+    showToast('✓ 标题与简介已生成，已存入历史稿件');
   } catch {
     renderMeta(META_FALLBACK_TITLES, META_FALLBACK_DESCS, { restoreSelection: false });
-    showToast('生成失败，已显示示例备选');
+    saveHistoryDraft();
+    showToast('生成失败，已显示示例备选并保存到历史');
   } finally {
     setMetaLoading('title', false);
     setMetaLoading('desc', false);
@@ -1019,10 +1193,12 @@ function pickMeta(type, idx, val) {
     const bar = document.getElementById('exportBar');
     bar.classList.add('show');
     bar.scrollIntoView({ behavior: 'smooth' });
+    syncHistoryDraftMeta();
   }
 }
 
 function copyScript() {
+  syncScriptFromEditor();
   if (!S.script) return;
   navigator.clipboard.writeText(S.script).then(() => showToast('✓ 已复制脚本'));
 }
@@ -1120,14 +1296,75 @@ function updateRefToggleUI() {
 
 // ═══════════════════════════════════════════
 // ═══════════════════════════════════════════
-// Script display & free text selection
+// Script display, manual edit & free text selection
 // ═══════════════════════════════════════════
+function updateScriptWordCount() {
+  const el = document.getElementById('wordCt');
+  if (el) el.textContent = S.script.replace(/\s/g, '').length;
+}
+
+function readScriptFromEditor() {
+  const body = document.getElementById('scriptBody');
+  if (!body) return '';
+  return body.innerText.replace(/\u00A0/g, ' ');
+}
+
+function syncScriptFromEditor() {
+  S.script = readScriptFromEditor();
+  updateScriptWordCount();
+}
+
+function setScriptEditorMode(mode) {
+  const body = document.getElementById('scriptBody');
+  if (!body) return;
+  const streaming = mode === 'streaming';
+  const editable = mode === 'editable';
+  body.contentEditable = editable ? 'plaintext-only' : 'false';
+  body.classList.toggle('streaming', streaming);
+  body.classList.toggle('script-editable', editable);
+  body.classList.toggle('script-selectable', editable);
+  if (editable) body.tabIndex = 0;
+}
+
+function invalidateScriptSelection() {
+  if (!S.selection) return;
+  S.selection = null;
+  updateSourceReqBtn();
+  document.querySelectorAll('.chat-apply-btn').forEach(btn => {
+    btn.disabled = true;
+    btn.textContent = '选区已失效';
+  });
+}
+
+function onScriptManualEdit() {
+  const body = document.getElementById('scriptBody');
+  if (!body?.classList.contains('streaming')) syncScriptFromEditor();
+  if (S.selection) invalidateScriptSelection();
+}
+
+function onScriptPaste(e) {
+  const body = document.getElementById('scriptBody');
+  if (!body || body.classList.contains('streaming')) return;
+  if (body.contentEditable === 'plaintext-only') return;
+  e.preventDefault();
+  const text = e.clipboardData?.getData('text/plain') || '';
+  const sel = window.getSelection();
+  if (!sel?.rangeCount) return;
+  const range = sel.getRangeAt(0);
+  range.deleteContents();
+  range.insertNode(document.createTextNode(text));
+  range.collapse(false);
+  sel.removeAllRanges();
+  sel.addRange(range);
+  onScriptManualEdit();
+}
+
 function renderScriptContent() {
   const body = document.getElementById('scriptBody');
   if (!body) return;
   body.textContent = S.script;
-  body.classList.add('script-selectable');
-  document.getElementById('wordCt').textContent = S.script.replace(/\s/g, '').length;
+  setScriptEditorMode('editable');
+  updateScriptWordCount();
   bindScriptSelectionEditor();
 }
 
@@ -1136,6 +1373,11 @@ function bindScriptSelectionEditor() {
   if (!body || body.dataset.selectionBound) return;
   body.dataset.selectionBound = '1';
   body.addEventListener('mouseup', onScriptMouseUp);
+  body.addEventListener('input', onScriptManualEdit);
+  body.addEventListener('paste', onScriptPaste);
+  body.addEventListener('blur', () => {
+    if (!body.classList.contains('streaming')) syncScriptFromEditor();
+  });
 }
 
 function getSelectionInScript() {
@@ -1151,7 +1393,7 @@ function getSelectionInScript() {
   measure.setEnd(range.endContainer, range.endOffset);
   const end = measure.toString().length;
   if (start === end) return null;
-  const text = S.script.slice(start, end);
+  const text = range.toString();
   if (!text.trim()) return null;
   return { start, end, text };
 }
@@ -1159,6 +1401,7 @@ function getSelectionInScript() {
 function onScriptMouseUp() {
   if (document.getElementById('scriptBody')?.classList.contains('streaming')) return;
   requestAnimationFrame(() => {
+    syncScriptFromEditor();
     const hit = getSelectionInScript();
     if (!hit) return;
     openSelectionFeedback(hit);
@@ -1208,6 +1451,7 @@ async function sendParaChat() {
   const inputEl = document.getElementById('chatInput');
   const input = inputEl.value.trim();
   if (!input) return;
+  syncScriptFromEditor();
   if (!S.selection) {
     showToast('请先在脚本草稿中拖选要修改的文字');
     return;
@@ -1373,6 +1617,7 @@ function renderCitationsError(msg) {
 }
 
 async function requestSources() {
+  syncScriptFromEditor();
   if (!S.script.trim()) { showToast('请先生成脚本草稿'); return; }
   if (!S.selection?.text?.trim()) { showToast('请先拖选要查证信源的句子'); return; }
 
@@ -1511,6 +1756,5 @@ Object.assign(window, {
   saveApiKeys,
   selectCol,
   deleteCol,
-  toggleColExpand,
   pickMeta,
 });
