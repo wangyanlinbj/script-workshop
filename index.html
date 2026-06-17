@@ -4,16 +4,16 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>周树人</title>
-  <link rel="icon" href="/logo.png" type="image/png" />
+  <link rel="icon" href="./logo.png" type="image/png" />
   <link href="https://fonts.googleapis.com/css2?family=Noto+Serif+SC:wght@400;600;700&family=Noto+Sans+SC:wght@300;400;500&display=swap" rel="stylesheet" />
-  <link rel="stylesheet" href="/src/style.css" />
+  <link rel="stylesheet" href="./src/style.css" />
 </head>
 <body>
 
 <!-- Header -->
 <header>
   <div class="logo">
-    <img class="logo-mark" src="/logo.png" alt="周树人" width="28" height="28" />
+    <img class="logo-mark" src="./logo.png" alt="周树人" width="28" height="28" />
     周树人
   </div>
   <div class="header-right">
@@ -42,7 +42,7 @@
   <div class="editor">
     <div class="ed-toolbar" id="edToolbar">
       <div class="col-ref-bar">
-        <span class="col-ref-label">栏目 &amp; 参考文献</span>
+        <span class="col-ref-label">栏目 &amp; 风格</span>
         <button type="button" class="upload-btn col-upload-btn" onclick="openFolderUpload()" title="上传含有 Word 文档的文件夹">+ 上传文件夹</button>
         <div class="col-tabs" id="colTabs"></div>
       </div>
@@ -71,7 +71,15 @@
               oninput="onCreatorIdentityInput()"></textarea>
             <div class="identity-foot">
               <span class="char-ct">已输入 <em id="identityCcNum">0</em> 字</span>
-              <button type="button" class="identity-reset-btn" onclick="resetCreatorIdentity()">恢复默认</button>
+              <div class="identity-preset-tools">
+                <select class="identity-preset-select" id="creatorIdentityPresetSelect" onchange="applyCreatorIdentityPreset(this.value)" title="选择创作者身份预设">
+                  <option value="default">默认：知识科普短视频</option>
+                </select>
+                <button type="button" class="identity-reset-btn" onclick="saveCreatorIdentityPreset()">保存为预设</button>
+                <button type="button" class="identity-reset-btn" onclick="renameCreatorIdentityPreset()">重命名</button>
+                <button type="button" class="identity-reset-btn" onclick="deleteCreatorIdentityPreset()">删除</button>
+                <button type="button" class="identity-reset-btn" onclick="resetCreatorIdentity()">恢复默认</button>
+              </div>
             </div>
           </div>
         </div>
@@ -106,7 +114,7 @@
               </div>
             </div>
             <div class="sc-body" id="scriptBody" style="padding:12px 16px" spellcheck="false"></div>
-            <div class="para-hint" id="paraHint" style="display:none">可直接在上方编辑逐字稿（打字、删除、复制、粘贴）；拖选句子后可 AI 修改或「信源请求」</div>
+            <div class="para-hint" id="paraHint" style="display:none">可直接在上方编辑逐字稿；选中文字后右键，可 AI 修改、真实性调查、剪切复制粘贴</div>
             <div class="sc-foot">字数：<strong id="wordCt">0</strong> 字</div>
           </div>
           <!-- 段落对话修改卡 -->
@@ -114,7 +122,7 @@
             <div class="chat-card-head">
               <span class="chat-card-title" id="chatCardTitle">选中内容修改</span>
               <div class="chat-head-actions">
-                <button type="button" class="chat-src-btn" id="sourceReqBtn" onclick="requestSources()" style="display:none">信源请求</button>
+                <button type="button" class="chat-src-btn" id="sourceReqBtn" onclick="requestSources()" style="display:none">真实性调查</button>
                 <button type="button" class="prev-close" onclick="closeChat()">✕</button>
               </div>
             </div>
@@ -175,27 +183,67 @@
 
   <aside class="right-rail citations-panel" id="citationsPanel">
     <section class="right-pane right-pane-cit cit-section">
-      <div class="right-pane-head"><span class="cit-label">参考文献</span></div>
+      <div class="right-pane-head"><span class="cit-label">真实性调查</span></div>
       <div class="right-pane-body cit-body" id="citBody">
         <div class="cit-empty" id="citEmpty">
           <div class="cit-empty-icon">📚</div>
-          <div>生成脚本草稿后，拖选句子并点击「信源请求」：从 OpenAlex / Crossref / 维基百科 检索真实链接（非模型编造）</div>
+          <div>生成脚本草稿后，选中句子并右键「真实性调查」：检索真实科学报道与期刊来源，核查内容是否可信</div>
         </div>
         <div class="cit-list" id="citList" hidden></div>
+        <div class="truth-ask-box" id="truthAskBox" hidden>
+          <textarea class="truth-ask-input" id="truthAskInput" rows="2" placeholder="继续追问当前调查…"></textarea>
+          <button type="button" class="truth-ask-btn" id="truthAskBtn" onclick="askTruthQuestion()">提问</button>
+        </div>
       </div>
     </section>
     <section class="right-pane right-pane-history history-panel">
       <div class="right-pane-head history-head">
         <span class="history-label">历史稿件</span>
-        <span class="history-count" id="historyCount">0/10</span>
+        <span class="history-count" id="historyCount">0/20</span>
       </div>
       <div class="right-pane-body history-list" id="historyList">
-        <div class="history-empty">确认稿件后，最近 10 篇会保存在这里</div>
+        <div class="history-empty">确认稿件后，最近 20 篇会保存在这里</div>
       </div>
     </section>
   </aside>
 </div>
 
+
+<div class="script-context-menu" id="scriptContextMenu" hidden>
+  <button type="button" data-action="ai-edit">AI 修改</button>
+  <button type="button" data-action="sources">真实性调查</button>
+  <div class="ctx-divider"></div>
+  <button type="button" data-action="cut">剪切</button>
+  <button type="button" data-action="copy">复制</button>
+  <button type="button" data-action="paste">粘贴</button>
+</div>
+
+<div class="modal-bg" id="aiEditModal">
+  <div class="modal ai-edit-modal">
+    <div class="modal-title">AI 修改</div>
+    <div class="modal-sub">选中文本会在确认后才替换。生成结果可先自由编辑，满意后再确认。</div>
+    <div class="ai-edit-grid">
+      <div class="ai-edit-field">
+        <label class="field-label">原文</label>
+        <div class="ai-edit-original" id="aiEditOriginal"></div>
+      </div>
+      <div class="ai-edit-field">
+        <label class="field-label">修改意见</label>
+        <textarea class="ai-edit-input" id="aiEditInstruction" rows="4" placeholder="例如：更口语化、压缩到50字、改成更抓人的开场…"></textarea>
+      </div>
+      <div class="ai-edit-field">
+        <label class="field-label">修改后文字</label>
+        <textarea class="ai-edit-result" id="aiEditResult" rows="8" placeholder="点击「重新生成」后，AI 修改结果会出现在这里；你也可以直接编辑。"></textarea>
+      </div>
+      <div class="ai-edit-status" id="aiEditStatus" role="status" aria-live="polite"></div>
+    </div>
+    <div class="modal-actions">
+      <button type="button" class="btn-c btn-ok" id="aiEditConfirmBtn" onclick="confirmAiEdit()">确认</button>
+      <button type="button" class="btn-c btn-secondary" id="aiEditRegenBtn" onclick="regenerateAiEdit()">重新生成</button>
+      <button type="button" class="btn-c btn-cancel" onclick="closeAiEditModal()">关闭</button>
+    </div>
+  </div>
+</div>
 
 <!-- Modal: API Key -->
 <div class="modal-bg" id="apiKeyModal">
@@ -306,6 +354,6 @@
 
 <div class="toast" id="toast"></div>
 
-<script type="module" src="/src/main.js"></script>
+<script type="module" src="./src/main.js"></script>
 </body>
 </html>

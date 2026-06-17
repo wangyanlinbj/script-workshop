@@ -187,7 +187,7 @@ export default defineConfig(({ mode }) => {
   const allowInsecureSsl = env.ALLOW_INSECURE_SSL === 'true';
 
   return {
-    base: '/',
+    base: './',
     plugins: [companyOpenaiRelayPlugin(upstreamAgent, allowInsecureSsl), topicSearchPlugin(upstreamAgent)],
     server: {
       port: 5173,

@@ -1,5 +1,10 @@
 import { Document, Packer, Paragraph, TextRun } from 'docx';
-import { fetchGroundedSources } from './sourceLookup.js';
+import {
+  answerTruthFollowup,
+  buildTruthInvestigationAnswer,
+  fetchGroundedSources,
+  formatTruthInvestigationMarkdown,
+} from './sourceLookup.js';
 import { initTopicPanel, renderTopicPanel } from './topicPanel.js';
 import { initStoryboardPanel, resetStoryboardPanel } from './storyboardPanel.js';
 
@@ -34,6 +39,7 @@ const DEFAULT_CREATOR_IDENTITY = `你是一个擅长将复杂知识转化为短�
 - 尽量用生活化类比`;
 
 let __creatorIdentityTimer;
+const CREATOR_IDENTITY_DEFAULT_PRESET_ID = 'default';
 
 // State & Provider Config
 // ═══════════════════════════════════════════
@@ -44,6 +50,7 @@ const S = {
   activeCol: null,
   script: '',
   selection: null,      // { start, end, text } 鼠标拖选范围（相对 S.script）
+  scriptCursorOffset: null,
   chatHistory: [],      // multi-turn chat for current selection
   selTitle: '',
   selDesc: '',
@@ -51,6 +58,8 @@ const S = {
   useRef: true,         // whether to inject reference docs into prompt
   sourceEntries: [],    // { id, sentence, content, createdAt }
   activeSourceId: null,
+  revisionEntries: [],  // { id, createdAt, provider, model, originalText, revisedText, instruction, prompts }
+  aiEditDraft: null,    // { start, end, originalText, instruction, result, prompts }
   historyDrafts: [],    // 历史稿件
   activeHistoryId: null,
 };
@@ -178,6 +187,7 @@ function init() {
 
   loadExpandedCols();
   loadSourceEntries();
+  loadRevisionEntries();
   loadHistoryDrafts();
   renderColumns();
   renderCitationsPanel();
@@ -499,7 +509,149 @@ function resetCreatorIdentity() {
   el.value = DEFAULT_CREATOR_IDENTITY;
   updateIdentityCC();
   persistCreatorIdentity();
+  setActiveCreatorIdentityPreset(CREATOR_IDENTITY_DEFAULT_PRESET_ID);
   showToast('已恢复默认创作者身份');
+}
+
+function loadCreatorIdentityPresets() {
+  try {
+    const raw = ls('creatorIdentityPresets');
+    const parsed = raw ? JSON.parse(raw) : [];
+    return Array.isArray(parsed)
+      ? parsed.filter(p => p && p.id && p.name && typeof p.content === 'string')
+      : [];
+  } catch {
+    return [];
+  }
+}
+
+function persistCreatorIdentityPresets(presets) {
+  try { lss('creatorIdentityPresets', JSON.stringify(presets)); } catch {}
+}
+
+function activeCreatorIdentityPresetId() {
+  return ls('activeCreatorIdentityPresetId') || CREATOR_IDENTITY_DEFAULT_PRESET_ID;
+}
+
+function setActiveCreatorIdentityPreset(id) {
+  lss('activeCreatorIdentityPresetId', id || CREATOR_IDENTITY_DEFAULT_PRESET_ID);
+  renderCreatorIdentityPresetSelect();
+}
+
+function renderCreatorIdentityPresetSelect() {
+  const sel = document.getElementById('creatorIdentityPresetSelect');
+  if (!sel) return;
+  const presets = loadCreatorIdentityPresets();
+  const activeId = activeCreatorIdentityPresetId();
+  sel.innerHTML = [
+    `<option value="${CREATOR_IDENTITY_DEFAULT_PRESET_ID}">默认：知识科普短视频</option>`,
+    ...presets.map(p => `<option value="${escHtml(p.id)}">${escHtml(p.name)}</option>`),
+  ].join('');
+  sel.value = presets.some(p => p.id === activeId) ? activeId : CREATOR_IDENTITY_DEFAULT_PRESET_ID;
+}
+
+function applyCreatorIdentityPreset(id) {
+  const el = document.getElementById('creatorIdentityInput');
+  if (!el) return;
+  const presetId = id || CREATOR_IDENTITY_DEFAULT_PRESET_ID;
+  const preset = presetId === CREATOR_IDENTITY_DEFAULT_PRESET_ID
+    ? { content: DEFAULT_CREATOR_IDENTITY }
+    : loadCreatorIdentityPresets().find(p => p.id === presetId);
+  if (!preset) {
+    renderCreatorIdentityPresetSelect();
+    showToast('未找到该预设');
+    return;
+  }
+  el.value = preset.content;
+  updateIdentityCC();
+  persistCreatorIdentity();
+  setActiveCreatorIdentityPreset(presetId);
+  showToast('✓ 已载入创作者身份预设');
+}
+
+function uniquePresetName(baseName, presets) {
+  const base = (baseName || '未命名预设').trim() || '未命名预设';
+  const names = new Set(presets.map(p => p.name));
+  if (!names.has(base)) return base;
+  let i = 2;
+  while (names.has(`${base} ${i}`)) i += 1;
+  return `${base} ${i}`;
+}
+
+function saveCreatorIdentityPreset() {
+  const el = document.getElementById('creatorIdentityInput');
+  if (!el) return;
+  const content = el.value.trim();
+  if (!content) { showToast('创作者身份内容为空，不能保存'); return; }
+  const presets = loadCreatorIdentityPresets();
+  const activeId = activeCreatorIdentityPresetId();
+  const activePreset = presets.find(p => p.id === activeId);
+  const suggested = activePreset?.name || '我的创作者身份';
+  const rawName = window.prompt('给这个创作者身份预设起个名字：', suggested);
+  if (rawName === null) return;
+  const name = rawName.trim();
+  if (!name) { showToast('预设名称不能为空'); return; }
+  const sameIdx = presets.findIndex(p => p.name === name);
+  if (sameIdx >= 0) {
+    if (!window.confirm(`已存在「${name}」，要覆盖它吗？`)) return;
+    presets[sameIdx] = {
+      ...presets[sameIdx],
+      content,
+      updatedAt: new Date().toLocaleString('zh-CN'),
+    };
+    persistCreatorIdentityPresets(presets);
+    setActiveCreatorIdentityPreset(presets[sameIdx].id);
+    persistCreatorIdentity();
+    showToast('✓ 已覆盖预设');
+    return;
+  }
+  const entry = {
+    id: 'preset_' + Date.now(),
+    name: uniquePresetName(name, presets),
+    content,
+    updatedAt: new Date().toLocaleString('zh-CN'),
+  };
+  presets.unshift(entry);
+  persistCreatorIdentityPresets(presets);
+  persistCreatorIdentity();
+  setActiveCreatorIdentityPreset(entry.id);
+  showToast('✓ 已保存为预设');
+}
+
+function renameCreatorIdentityPreset() {
+  const activeId = activeCreatorIdentityPresetId();
+  if (activeId === CREATOR_IDENTITY_DEFAULT_PRESET_ID) {
+    showToast('默认预设不能重命名');
+    return;
+  }
+  const presets = loadCreatorIdentityPresets();
+  const idx = presets.findIndex(p => p.id === activeId);
+  if (idx < 0) { showToast('请先选择一个用户预设'); return; }
+  const rawName = window.prompt('新的预设名称：', presets[idx].name);
+  if (rawName === null) return;
+  const name = rawName.trim();
+  if (!name) { showToast('预设名称不能为空'); return; }
+  const duplicate = presets.some((p, i) => i !== idx && p.name === name);
+  if (duplicate) { showToast('已有同名预设'); return; }
+  presets[idx] = { ...presets[idx], name, updatedAt: new Date().toLocaleString('zh-CN') };
+  persistCreatorIdentityPresets(presets);
+  renderCreatorIdentityPresetSelect();
+  showToast('✓ 已重命名预设');
+}
+
+function deleteCreatorIdentityPreset() {
+  const activeId = activeCreatorIdentityPresetId();
+  if (activeId === CREATOR_IDENTITY_DEFAULT_PRESET_ID) {
+    showToast('默认预设不能删除');
+    return;
+  }
+  const presets = loadCreatorIdentityPresets();
+  const preset = presets.find(p => p.id === activeId);
+  if (!preset) { showToast('请先选择一个用户预设'); return; }
+  if (!window.confirm(`确定删除「${preset.name}」吗？`)) return;
+  persistCreatorIdentityPresets(presets.filter(p => p.id !== activeId));
+  setActiveCreatorIdentityPreset(CREATOR_IDENTITY_DEFAULT_PRESET_ID);
+  showToast('已删除预设');
 }
 
 function initCreatorIdentity() {
@@ -507,6 +659,7 @@ function initCreatorIdentity() {
   if (!el) return;
   el.value = ls('creatorIdentity') || DEFAULT_CREATOR_IDENTITY;
   updateIdentityCC();
+  renderCreatorIdentityPresetSelect();
   const block = document.getElementById('identityBlock');
   if (block && ls('creatorIdentityCollapsed') === 'true') {
     block.classList.add('collapsed');
@@ -892,7 +1045,7 @@ const META_DESC_RULE = '简介每条 15～20 字（不超过 20 字）：尽量�
 const META_FALLBACK_TITLES = ['熬夜后大脑在偷偷补课？', '你以为在发呆，其实在记东西', '记忆为啥睡一觉就变牢了'];
 const META_FALLBACK_DESCS = ['看完才懂：睡眠是把记忆写进大脑的关键', '熬夜复习白费功？记忆要靠睡眠写进脑子'];
 
-const HISTORY_MAX = 10;
+const HISTORY_MAX = 20;
 
 function loadHistoryDrafts() {
   try {
@@ -959,7 +1112,7 @@ function renderHistoryPanel() {
   if (!list) return;
   if (count) count.textContent = `${S.historyDrafts.length}/${HISTORY_MAX}`;
   if (!S.historyDrafts.length) {
-    list.innerHTML = '<div class="history-empty">确认稿件后，最近 10 篇会保存在这里</div>';
+    list.innerHTML = `<div class="history-empty">确认稿件后，最近 ${HISTORY_MAX} 篇会保存在这里</div>`;
     return;
   }
   list.innerHTML = S.historyDrafts.map(item => {
@@ -1373,11 +1526,13 @@ function bindScriptSelectionEditor() {
   if (!body || body.dataset.selectionBound) return;
   body.dataset.selectionBound = '1';
   body.addEventListener('mouseup', onScriptMouseUp);
+  body.addEventListener('contextmenu', onScriptContextMenu);
   body.addEventListener('input', onScriptManualEdit);
   body.addEventListener('paste', onScriptPaste);
   body.addEventListener('blur', () => {
     if (!body.classList.contains('streaming')) syncScriptFromEditor();
   });
+  bindScriptContextMenu();
 }
 
 function getSelectionInScript() {
@@ -1398,19 +1553,51 @@ function getSelectionInScript() {
   return { start, end, text };
 }
 
+function getCaretOffsetInScript() {
+  const body = document.getElementById('scriptBody');
+  const sel = window.getSelection();
+  if (!body || !sel || sel.rangeCount === 0) return null;
+  const range = sel.getRangeAt(0);
+  if (!range.collapsed || !body.contains(range.commonAncestorContainer)) return null;
+  const measure = document.createRange();
+  measure.selectNodeContents(body);
+  measure.setEnd(range.startContainer, range.startOffset);
+  return measure.toString().length;
+}
+
 function onScriptMouseUp() {
   if (document.getElementById('scriptBody')?.classList.contains('streaming')) return;
   requestAnimationFrame(() => {
     syncScriptFromEditor();
     const hit = getSelectionInScript();
-    if (!hit) return;
-    openSelectionFeedback(hit);
+    if (hit) {
+      setScriptSelection(hit);
+      S.scriptCursorOffset = null;
+      return;
+    }
+    const offset = getCaretOffsetInScript();
+    if (offset !== null) {
+      S.selection = null;
+      S.scriptCursorOffset = offset;
+      updateSourceReqBtn();
+    }
   });
 }
 
-function openSelectionFeedback({ start, end, text }) {
-  const changed = !S.selection || S.selection.start !== start || S.selection.end !== end;
+function setScriptSelection({ start, end, text }) {
+  const changed = !S.selection || S.selection.start !== start || S.selection.end !== end || S.selection.text !== text;
   S.selection = { start, end, text };
+  if (changed) {
+    S.chatHistory = [];
+    const msgs = document.getElementById('chatMsgs');
+    if (msgs) msgs.innerHTML = '';
+  }
+  updateSourceReqBtn();
+}
+
+function openSelectionFeedback({ start, end, text }) {
+  setScriptSelection({ start, end, text });
+  const changed = !S.selection || S.selection.start !== start || S.selection.end !== end;
   if (changed) {
     S.chatHistory = [];
     document.getElementById('chatMsgs').innerHTML = '';
@@ -1423,6 +1610,104 @@ function openSelectionFeedback({ start, end, text }) {
   document.getElementById('chatCard').scrollIntoView({ behavior: 'smooth', block: 'nearest' });
   document.getElementById('chatInput').focus();
   updateSourceReqBtn();
+}
+
+function bindScriptContextMenu() {
+  const menu = document.getElementById('scriptContextMenu');
+  if (!menu || menu.dataset.bound) return;
+  menu.dataset.bound = '1';
+  menu.addEventListener('click', (e) => {
+    const btn = e.target.closest('button[data-action]');
+    if (!btn) return;
+    e.preventDefault();
+    const action = btn.dataset.action;
+    closeScriptContextMenu();
+    handleScriptContextAction(action);
+  });
+  document.addEventListener('click', (e) => {
+    if (!menu.hidden && !e.target.closest('#scriptContextMenu')) closeScriptContextMenu();
+  });
+  document.addEventListener('scroll', closeScriptContextMenu, true);
+}
+
+function onScriptContextMenu(e) {
+  const body = document.getElementById('scriptBody');
+  if (!body || body.classList.contains('streaming')) return;
+  syncScriptFromEditor();
+  const hit = getSelectionInScript();
+  if (hit) {
+    setScriptSelection(hit);
+    S.scriptCursorOffset = null;
+  } else {
+    S.selection = null;
+    S.scriptCursorOffset = getCaretOffsetInScript();
+    updateSourceReqBtn();
+  }
+  e.preventDefault();
+  openScriptContextMenu(e.clientX, e.clientY, Boolean(S.selection?.text?.trim()));
+}
+
+function openScriptContextMenu(clientX, clientY, hasSelection) {
+  const menu = document.getElementById('scriptContextMenu');
+  if (!menu) return;
+  menu.querySelectorAll('[data-action="ai-edit"], [data-action="sources"], [data-action="cut"], [data-action="copy"]')
+    .forEach(btn => { btn.disabled = !hasSelection; });
+  menu.hidden = false;
+  const pad = 8;
+  const rect = menu.getBoundingClientRect();
+  const left = Math.min(clientX, window.innerWidth - rect.width - pad);
+  const top = Math.min(clientY, window.innerHeight - rect.height - pad);
+  menu.style.left = `${Math.max(pad, left)}px`;
+  menu.style.top = `${Math.max(pad, top)}px`;
+}
+
+function closeScriptContextMenu() {
+  const menu = document.getElementById('scriptContextMenu');
+  if (menu) menu.hidden = true;
+}
+
+async function handleScriptContextAction(action) {
+  if (action === 'ai-edit') { openAiEditModal(); return; }
+  if (action === 'sources') { requestSources(); return; }
+  if (action === 'copy') { await copySelectedScriptText(); return; }
+  if (action === 'cut') { await cutSelectedScriptText(); return; }
+  if (action === 'paste') { await pasteIntoScriptSelection(); }
+}
+
+async function copySelectedScriptText() {
+  if (!S.selection?.text) { showToast('请先选中文字'); return; }
+  await navigator.clipboard.writeText(S.selection.text);
+  showToast('✓ 已复制选中文字');
+}
+
+async function cutSelectedScriptText() {
+  if (!S.selection?.text) { showToast('请先选中文字'); return; }
+  await navigator.clipboard.writeText(S.selection.text);
+  applyScriptRangeEdit(S.selection.start, S.selection.end, '', S.selection.text);
+  closeChat();
+  showToast('✓ 已剪切');
+}
+
+async function pasteIntoScriptSelection() {
+  let text = '';
+  try {
+    text = await navigator.clipboard.readText();
+  } catch {
+    showToast('浏览器不允许直接粘贴，请使用 Cmd/Ctrl + V');
+    return;
+  }
+  if (!text) return;
+  syncScriptFromEditor();
+  if (S.selection) {
+    applyScriptRangeEdit(S.selection.start, S.selection.end, text, S.selection.text);
+  } else if (S.scriptCursorOffset !== null) {
+    const start = Math.max(0, Math.min(S.script.length, S.scriptCursorOffset));
+    applyScriptRangeEdit(start, start, text, '');
+  } else {
+    S.script += text;
+    renderScriptContent();
+  }
+  showToast('✓ 已粘贴');
 }
 
 function closeChat() {
@@ -1502,10 +1787,10 @@ async function sendParaChat() {
 }
 
 function applySelectionEdit(start, end, newText, applyBtn) {
-  S.script = S.script.slice(0, start) + newText + S.script.slice(end);
+  const expected = S.selection?.start === start && S.selection?.end === end ? S.selection.text : '';
+  if (!applyScriptRangeEdit(start, end, newText, expected)) return;
   const newEnd = start + newText.length;
   S.selection = { start, end: newEnd, text: newText };
-  renderScriptContent();
   const preview = newText.length > 280 ? newText.slice(0, 280) + '…' : newText;
   document.getElementById('chatParaQuote').textContent = preview;
   document.getElementById('chatParaQuote').title = newText;
@@ -1518,13 +1803,175 @@ function applySelectionEdit(start, end, newText, applyBtn) {
   showToast('✓ 已应用修改');
 }
 
+function applyScriptRangeEdit(start, end, newText, expectedText = '') {
+  syncScriptFromEditor();
+  const current = S.script.slice(start, end);
+  if (expectedText && current !== expectedText) {
+    showToast('原文已变化，请重新选中要修改的文字');
+    return false;
+  }
+  S.script = S.script.slice(0, start) + newText + S.script.slice(end);
+  renderScriptContent();
+  if (newText) S.selection = { start, end: start + newText.length, text: newText };
+  else S.selection = null;
+  updateSourceReqBtn();
+  return true;
+}
+
 function chatKeydown(e) {
   if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendParaChat(); }
 }
 
+// ═══════════════════════════════════════════
+// Word-like context edit modal
+// ═══════════════════════════════════════════
+function loadRevisionEntries() {
+  try {
+    const raw = ls('revisionEntries');
+    if (raw) S.revisionEntries = JSON.parse(raw);
+  } catch { S.revisionEntries = []; }
+  if (!Array.isArray(S.revisionEntries)) S.revisionEntries = [];
+}
+
+function persistRevisionEntries() {
+  try { lss('revisionEntries', JSON.stringify(S.revisionEntries.slice(0, 50))); } catch {}
+}
+
+function recordRevisionEntry(entry) {
+  S.revisionEntries.unshift(entry);
+  persistRevisionEntries();
+}
+
+function setAiEditStatus(text, kind = '') {
+  const el = document.getElementById('aiEditStatus');
+  if (!el) return;
+  el.textContent = text || '';
+  el.className = 'ai-edit-status' + (kind ? ' is-' + kind : '');
+}
+
+function openAiEditModal() {
+  syncScriptFromEditor();
+  if (!S.selection?.text?.trim()) {
+    showToast('请先选中要修改的文字');
+    return;
+  }
+  S.aiEditDraft = {
+    start: S.selection.start,
+    end: S.selection.end,
+    originalText: S.selection.text,
+    instruction: '',
+    result: S.selection.text,
+    prompts: null,
+  };
+  document.getElementById('aiEditOriginal').textContent = S.selection.text;
+  document.getElementById('aiEditInstruction').value = '';
+  document.getElementById('aiEditResult').value = S.selection.text;
+  setAiEditStatus('', '');
+  openModal('aiEditModal');
+  setTimeout(() => document.getElementById('aiEditInstruction')?.focus(), 0);
+}
+
+function closeAiEditModal() {
+  closeModal('aiEditModal');
+  S.aiEditDraft = null;
+  setAiEditStatus('', '');
+}
+
+function buildAiEditPrompts(instruction, originalText) {
+  const system = '你是专业视频脚本编辑。根据用户的修改要求，对脚本中被选中的片段进行改写。只返回改写后的片段正文，不添加任何解释、前缀或引号，不要输出未被选中的其他内容。';
+  const user = `完整脚本供参考：
+${S.script}
+
+需要修改的选中内容：
+${originalText}
+
+修改要求：
+${instruction}`;
+  return { system, user };
+}
+
+async function regenerateAiEdit() {
+  if (!S.aiEditDraft) return;
+  syncScriptFromEditor();
+  const instructionEl = document.getElementById('aiEditInstruction');
+  const resultEl = document.getElementById('aiEditResult');
+  const regenBtn = document.getElementById('aiEditRegenBtn');
+  const confirmBtn = document.getElementById('aiEditConfirmBtn');
+  const instruction = instructionEl.value.trim();
+  if (!instruction) {
+    showToast('请先填写修改意见');
+    instructionEl.focus();
+    return;
+  }
+  const current = S.script.slice(S.aiEditDraft.start, S.aiEditDraft.end);
+  if (current !== S.aiEditDraft.originalText) {
+    showToast('原文已变化，请关闭后重新选择');
+    setAiEditStatus('原文已变化，请关闭弹窗后重新选择要修改的文字。', 'err');
+    return;
+  }
+
+  const prompts = buildAiEditPrompts(instruction, S.aiEditDraft.originalText);
+  S.aiEditDraft.instruction = instruction;
+  S.aiEditDraft.prompts = prompts;
+  S.aiEditDraft.result = '';
+  resultEl.value = '';
+  resultEl.disabled = true;
+  regenBtn.disabled = true;
+  confirmBtn.disabled = true;
+  setAiEditStatus('正在生成修改稿…', 'info');
+
+  try {
+    await callStreamWithHistory(prompts.system, [{ role: 'user', content: prompts.user }], chunk => {
+      S.aiEditDraft.result += chunk;
+      resultEl.value = S.aiEditDraft.result;
+      resultEl.scrollTop = resultEl.scrollHeight;
+    });
+    persistApiSettings();
+    setAiEditStatus('已生成，可继续编辑后确认替换。', 'ok');
+  } catch (e) {
+    setAiEditStatus('生成失败：' + e.message, 'err');
+    showToast('❌ ' + e.message);
+  } finally {
+    resultEl.disabled = false;
+    regenBtn.disabled = false;
+    confirmBtn.disabled = false;
+    resultEl.focus();
+  }
+}
+
+function confirmAiEdit() {
+  if (!S.aiEditDraft) return;
+  const resultEl = document.getElementById('aiEditResult');
+  const instructionEl = document.getElementById('aiEditInstruction');
+  const revisedText = resultEl.value.trim();
+  if (!revisedText) {
+    showToast('修改后文字不能为空');
+    resultEl.focus();
+    return;
+  }
+  const instruction = instructionEl.value.trim();
+  const draft = S.aiEditDraft;
+  const ok = applyScriptRangeEdit(draft.start, draft.end, revisedText, draft.originalText);
+  if (!ok) return;
+
+  const cfg = PROVIDER_CFG[currentProvider()];
+  recordRevisionEntry({
+    id: 'rev_' + Date.now(),
+    createdAt: new Date().toLocaleString('zh-CN'),
+    provider: cfg?.name || currentProvider(),
+    model: fieldValue(cfg?.modelKey || ''),
+    originalText: draft.originalText,
+    revisedText,
+    instruction,
+    prompts: draft.prompts || buildAiEditPrompts(instruction || '用户手动编辑修改稿', draft.originalText),
+  });
+  closeAiEditModal();
+  showToast('✓ 已替换原文并记录修改');
+}
+
 
 // ═══════════════════════════════════════════
-// Citations / 信源请求
+// Truth investigation
 // ═══════════════════════════════════════════
 function loadSourceEntries() {
   try {
@@ -1546,21 +1993,28 @@ function updateSourceReqBtn() {
   btn.disabled = false;
 }
 
+function activeTruthEntry() {
+  return S.sourceEntries.find(entry => entry.id === S.activeSourceId) || null;
+}
+
 function renderCitationsPanel(streamingText) {
   const empty = document.getElementById('citEmpty');
   const list = document.getElementById('citList');
+  const askBox = document.getElementById('truthAskBox');
   if (!list) return;
 
   if (streamingText !== undefined) {
     if (empty) empty.hidden = true;
+    if (askBox) askBox.hidden = true;
     list.hidden = false;
-    list.innerHTML = '<div class="cit-entry active"><div class="cit-entry-head">正在检索信源…</div><div class="cit-content streaming">' + formatCitationContent(streamingText) + '</div></div>';
+    list.innerHTML = '<div class="cit-entry active"><div class="cit-entry-head">正在真实性调查…</div><div class="cit-content streaming">' + formatCitationContent(streamingText) + '</div></div>';
     list.scrollTop = list.scrollHeight;
     return;
   }
 
   if (!S.sourceEntries.length) {
     if (empty) empty.hidden = false;
+    if (askBox) askBox.hidden = true;
     list.hidden = true;
     list.innerHTML = '';
     return;
@@ -1568,6 +2022,7 @@ function renderCitationsPanel(streamingText) {
 
   if (empty) empty.hidden = true;
   list.hidden = false;
+  if (askBox) askBox.hidden = !activeTruthEntry();
   const parts = S.sourceEntries.map(entry => {
     const active = entry.id === S.activeSourceId;
     const q = entry.sentence.length > 72 ? entry.sentence.slice(0, 72) + '…' : entry.sentence;
@@ -1584,6 +2039,16 @@ function renderCitationsPanel(streamingText) {
       h += '<div class="cit-entry-body">';
       h += '<div class="cit-detail-quote">' + escHtml(entry.sentence) + '</div>';
       h += '<div class="cit-content">' + formatCitationContent(entry.content) + '</div>';
+      if (Array.isArray(entry.qa) && entry.qa.length) {
+        h += '<div class="truth-qa-list">';
+        for (const qa of entry.qa) {
+          h += '<div class="truth-qa-item">';
+          h += '<div class="truth-q">问：' + escHtml(qa.question) + '</div>';
+          h += '<div class="truth-a">' + formatCitationContent(qa.answer) + '</div>';
+          h += '</div>';
+        }
+        h += '</div>';
+      }
       h += '</div>';
     }
     h += '</div>';
@@ -1614,43 +2079,89 @@ function renderCitationsError(msg) {
     list.hidden = false;
     list.innerHTML = '<div class="cit-entry active"><div class="cit-content" style="color:var(--accent)">❌ ' + escHtml(msg) + '</div></div>';
   }
+  const askBox = document.getElementById('truthAskBox');
+  if (askBox) askBox.hidden = true;
 }
 
 async function requestSources() {
   syncScriptFromEditor();
   if (!S.script.trim()) { showToast('请先生成脚本草稿'); return; }
-  if (!S.selection?.text?.trim()) { showToast('请先拖选要查证信源的句子'); return; }
+  if (!S.selection?.text?.trim()) { showToast('请先选中要做真实性调查的文字'); return; }
 
   const sentence = S.selection.text.trim();
   const btn = document.getElementById('sourceReqBtn');
-  if (btn) { btn.disabled = true; btn.textContent = '检索中…'; }
+  if (btn) { btn.disabled = true; btn.textContent = '调查中…'; }
 
   renderCitationsPanel('正在启动真实数据库检索…\n');
   try {
-    const { content } = await fetchGroundedSources({
+    const { points, sources } = await fetchGroundedSources({
       sentence,
       script: S.script,
       onProgress: msg => renderCitationsPanel(msg),
       callStream,
     });
+    renderCitationsPanel('已获得真实检索结果，正在基于来源生成真实性结论…\n');
+    const answer = await buildTruthInvestigationAnswer({
+      sentence,
+      script: S.script,
+      sources,
+      callStream,
+    });
+    const content = formatTruthInvestigationMarkdown(sentence, answer, sources);
     persistApiSettings();
     const entry = {
       id: 'src_' + Date.now(),
       sentence,
       content,
+      points,
+      sources,
+      qa: [],
       createdAt: new Date().toLocaleString('zh-CN'),
     };
     S.sourceEntries.unshift(entry);
     S.activeSourceId = entry.id;
     persistSourceEntries();
     renderCitationsPanel();
-    showToast('✓ 已检索真实文献链接');
+    showToast('✓ 已完成真实性调查');
   } catch (e) {
     renderCitationsError(e.message);
     showToast('❌ ' + e.message);
   } finally {
-    if (btn) { btn.disabled = false; btn.textContent = '信源请求'; }
+    if (btn) { btn.disabled = false; btn.textContent = '真实性调查'; }
     updateSourceReqBtn();
+  }
+}
+
+async function askTruthQuestion() {
+  const entry = activeTruthEntry();
+  const input = document.getElementById('truthAskInput');
+  const btn = document.getElementById('truthAskBtn');
+  const question = input?.value.trim();
+  if (!entry) { showToast('请先展开一条真实性调查'); return; }
+  if (!question) { input?.focus(); return; }
+  input.value = '';
+  if (!Array.isArray(entry.qa)) entry.qa = [];
+  const qa = { question, answer: '正在基于当前真实来源回答…', createdAt: new Date().toLocaleString('zh-CN') };
+  entry.qa.push(qa);
+  renderCitationsPanel();
+  const activeBtn = document.getElementById('truthAskBtn') || btn;
+  if (activeBtn) { activeBtn.disabled = true; activeBtn.textContent = '回答中…'; }
+
+  try {
+    const answer = await answerTruthFollowup({ question, entry, callStream });
+    qa.answer = answer;
+    persistApiSettings();
+    persistSourceEntries();
+    renderCitationsPanel();
+    showToast('✓ 已基于来源回答');
+  } catch (e) {
+    qa.answer = '❌ ' + e.message;
+    renderCitationsPanel();
+    showToast('❌ ' + e.message);
+  } finally {
+    const nextBtn = document.getElementById('truthAskBtn') || btn;
+    if (nextBtn) { nextBtn.disabled = false; nextBtn.textContent = '提问'; }
+    document.getElementById('truthAskInput')?.focus();
   }
 }
 
@@ -1711,7 +2222,12 @@ function openApiKeyModal() {
 }
 
 document.querySelectorAll('.modal-bg').forEach(bg => bg.addEventListener('click', e => { if (e.target === bg) bg.classList.remove('show'); }));
-document.addEventListener('keydown', e => { if (e.key === 'Escape') document.querySelectorAll('.modal-bg.show').forEach(m => m.classList.remove('show')); });
+document.addEventListener('keydown', e => {
+  if (e.key === 'Escape') {
+    closeScriptContextMenu();
+    document.querySelectorAll('.modal-bg.show').forEach(m => m.classList.remove('show'));
+  }
+});
 
 let toastT;
 function showToast(msg, durationMs = 2800) {
@@ -1736,6 +2252,10 @@ Object.assign(window, {
   toggleCreatorIdentity,
   onCreatorIdentityInput,
   resetCreatorIdentity,
+  applyCreatorIdentityPreset,
+  saveCreatorIdentityPreset,
+  renameCreatorIdentityPreset,
+  deleteCreatorIdentityPreset,
   updateCC,
   copyScript,
   confirmScript,
@@ -1743,7 +2263,12 @@ Object.assign(window, {
   regenerateMetaDescs,
   closeChat,
   sendParaChat,
+  openAiEditModal,
+  regenerateAiEdit,
+  confirmAiEdit,
+  closeAiEditModal,
   requestSources,
+  askTruthQuestion,
   toggleSourceEntry,
   collapseSourceEntry,
   chatKeydown,

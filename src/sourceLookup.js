@@ -1,7 +1,15 @@
 /**
- * 信源检索：用真实 API（OpenAlex / Crossref / 维基百科）返回可点击链接，
+ * 信源检索：用真实 API / 站点搜索（OpenAlex / Crossref / 科学报道 / 维基百科）返回可点击链接，
  * 避免大模型直接编造 URL。
  */
+
+const SCIENCE_REPORT_SOURCES = [
+  { url: 'https://www.kepuchina.cn', enabled: true },
+  { url: 'https://www.guokr.com', enabled: true },
+  { url: 'https://www.popsci.com/', enabled: true },
+  { url: 'https://www.sciencealert.com/', enabled: true },
+  { url: 'https://www.scientificamerican.com/', enabled: true },
+];
 
 async function safeFetchJson(url) {
   const res = await fetch(url);
@@ -99,6 +107,32 @@ export async function searchWikipediaZh(query, limit = 2) {
   }
 }
 
+export async function searchScienceReports(query, limit = 3) {
+  try {
+    const res = await fetch('/api/topic-search', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        keyword: query,
+        sources: SCIENCE_REPORT_SOURCES,
+        limit,
+      }),
+    });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const data = await res.json();
+    return (data.items || []).map(item => ({
+      type: `科学报道（${item.sourceName || 'Science source'}）`,
+      title: item.title || '未知标题',
+      meta: [item.publishedAt, item.metricLabel && item.metric ? `${item.metric} ${item.metricLabel}` : ''].filter(Boolean).join(' · '),
+      url: item.url,
+      query,
+      topicKey: query,
+    })).filter(s => s.url && /^https?:\/\//i.test(s.url));
+  } catch {
+    return [];
+  }
+}
+
 function dedupeSources(items) {
   const seen = new Set();
   const out = [];
@@ -113,7 +147,7 @@ function dedupeSources(items) {
 
 export function formatGroundedSourceMarkdown(sentence, points, sources) {
   const lines = [
-    '以下链接来自 OpenAlex / Crossref / 维基百科 的真实检索结果，不是模型编造的网址。',
+    '以下链接来自 OpenAlex / Crossref / 科学报道 / 维基百科 的真实检索结果，不是模型编造的网址。',
     '请自行点开核实是否与你的句子一致；检索结果未必完全覆盖视频口播表述。',
     '',
     `**待查证句子：** ${sentence}`,
@@ -150,6 +184,81 @@ export function formatGroundedSourceMarkdown(sentence, points, sources) {
   return lines.join('\n').trim();
 }
 
+export function formatSourcesForPrompt(sources) {
+  return (sources || []).map((s, i) => {
+    const meta = s.meta ? `；信息：${s.meta}` : '';
+    return `[${i + 1}] 标题：${s.title}\n类型：${s.type}${meta}\n链接：${s.url}\n检索词：${s.query || s.topicKey || ''}`;
+  }).join('\n\n');
+}
+
+export function formatTruthInvestigationMarkdown(sentence, answer, sources) {
+  const lines = [
+    '以下结论基于 OpenAlex / Crossref / 科学报道 / 维基百科 的真实检索结果；链接可追踪到原始页面或 DOI。若来源不足，结论会明确标注“不足以判断”，严禁把没有来源的内容写成事实。',
+    '',
+    `**调查对象：** ${sentence}`,
+    '',
+    answer.trim(),
+  ];
+
+  if (sources?.length) {
+    lines.push('', '### 可追踪来源');
+    sources.slice(0, 12).forEach((s, i) => {
+      lines.push(`- [${i + 1}] [${s.title}](${s.url}) — ${s.type}${s.meta ? ' · ' + s.meta : ''}`);
+    });
+  }
+
+  return lines.join('\n').trim();
+}
+
+export async function buildTruthInvestigationAnswer({ sentence, script, sources, callStream }) {
+  const sourceBlock = formatSourcesForPrompt(sources);
+  const sys = `你是严谨的科学事实核查员。你只能依据用户提供的“可追踪来源列表”回答，不得编造论文、报道、机构、年份、作者、URL 或 DOI。
+必须遵守：
+1. 结论必须是：基本可信 / 部分可信但需修正 / 证据不足 / 不可信 之一。
+2. 每个事实判断都要引用来源编号，如 [1]、[2]。
+3. 如果来源列表不能支持某个判断，明确写“当前来源不足以支持”。
+4. 不要把维基百科当成最终学术证据；可作为背景，关键科学判断优先使用论文或 DOI 来源。
+5. 输出中文 Markdown，结构为：结论、证据、需要修正的表述、可直接替换的更严谨写法。`;
+  const prompt = `完整脚本节选：
+${String(script || '').slice(0, 1200)}
+
+待核查文本：
+${sentence}
+
+可追踪来源列表：
+${sourceBlock || '（无来源）'}
+
+请基于以上来源做真实性调查。`;
+
+  let answer = '';
+  await callStream(prompt, sys, t => { answer += t; });
+  return answer.trim();
+}
+
+export async function answerTruthFollowup({ question, entry, callStream }) {
+  const sourceBlock = formatSourcesForPrompt(entry.sources || []);
+  const sys = `你是严谨的科学事实核查员。你只能依据用户提供的“可追踪来源列表”和已有调查内容回答，不得编造论文、报道、机构、年份、作者、URL 或 DOI。
+回答要求：
+1. 每个关键判断必须引用来源编号，如 [1]、[2]。
+2. 如果现有来源不足以回答，直接说“现有来源不足以回答”，并建议用户重新选中更具体文本发起调查。
+3. 输出中文，简洁但要可核查。`;
+  const prompt = `调查对象：
+${entry.sentence}
+
+已有调查内容：
+${entry.content}
+
+可追踪来源列表：
+${sourceBlock || '（无来源）'}
+
+用户追问：
+${question}`;
+
+  let answer = '';
+  await callStream(prompt, sys, t => { answer += t; });
+  return answer.trim();
+}
+
 /**
  * @param {{ sentence: string, script: string, onProgress?: (msg: string) => void, callStream: Function }} opts
  */
@@ -158,18 +267,19 @@ export async function fetchGroundedSources({ sentence, script, onProgress, callS
 
   progress('① 分析句子，生成检索关键词…\n');
   const points = await extractSourceQueries(sentence, script.slice(0, 800), callStream);
-  progress(`已识别 ${points.length} 个知识点，正在检索数据库…\n\n`);
+  progress(`已识别 ${points.length} 个知识点，正在检索学术库与科学报道…\n\n`);
 
   const all = [];
   for (const point of points) {
     for (const query of point.queries) {
       progress(`检索中：${point.topic} · ${query}\n`);
-      const [oa, cr, wiki] = await Promise.all([
+      const [oa, cr, wiki, reports] = await Promise.all([
         searchOpenAlex(query, 2),
         searchCrossref(query, 1),
         searchWikipediaZh(query, 1),
+        searchScienceReports(query, 2),
       ]);
-      for (const s of [...oa, ...cr, ...wiki]) {
+      for (const s of [...oa, ...cr, ...reports, ...wiki]) {
         s.topicKey = query;
         all.push(s);
       }

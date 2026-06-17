@@ -325,7 +325,7 @@ async function confirmShotVisual(id) {
   setShotBusy(id, true);
   try {
     const parsed = await deps.callMetaJson(
-      `将以下中文分镜画面描述转为 GPT Image（gpt-image-1）可用的英文绘图提示词。要求：具体视觉元素、构图、光线、风格；无对话文字；80-120 英文词。返回 JSON：{"prompt":"..."}\n\n口播片段：${shot.scriptSegment}\n画面描述：${shot.visualDesc}`,
+      `将以下分镜画面描述整理为 GPT Image（gpt-image-1）可用的中文绘图提示词。要求：只输出中文；写清镜头景别、画面主体、动作、环境、构图、光线、色彩、画面风格；不要出现对白、字幕、水印、英文词或解释说明；80-160 个中文字。返回 JSON：{"prompt":"中文提示词"}\n\n口播片段：${shot.scriptSegment}\n画面描述：${shot.visualDesc}`,
     );
     shot.imagePrompt = String(parsed.prompt || '').trim();
     shot.confirmed = !!shot.imagePrompt;
